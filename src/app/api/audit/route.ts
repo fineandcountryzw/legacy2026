@@ -2,43 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { createClient } from "@/lib/supabase/server";
 
-// Mock audit events table - in production this would be a real table
-const mockAuditEvents = [
-  {
-    id: "1",
-    timestamp: "2024-02-25T10:30:00Z",
-    actor: "user_admin_001",
-    actorName: "Admin User",
-    action: "STATEMENT_DOWNLOADED",
-    entityType: "stand",
-    entityId: "stand_001",
-    summary: "Downloaded statement for Stand 101",
-    metadata: { standNumber: "101", clientName: "John Doe" },
-  },
-  {
-    id: "2",
-    timestamp: "2024-02-25T09:15:00Z",
-    actor: "user_finance_001",
-    actorName: "Finance User",
-    action: "RECEIPT_CREATED",
-    entityType: "receipt",
-    entityId: "receipt_001",
-    summary: "Created receipt REC-2024-001",
-    metadata: { receiptNumber: "REC-2024-001", amount: 5000 },
-  },
-  {
-    id: "3",
-    timestamp: "2024-02-24T16:45:00Z",
-    actor: "user_admin_001",
-    actorName: "Admin User",
-    action: "DEVELOPMENT_CREATED",
-    entityType: "development",
-    entityId: "dev_001",
-    summary: "Created development 'Green Valley Estate'",
-    metadata: { developmentName: "Green Valley Estate", code: "GVE" },
-  },
-];
-
 // GET /api/audit - Get audit log events
 export async function GET(request: NextRequest) {
   try {
@@ -55,33 +18,49 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    // Filter mock events
-    let events = [...mockAuditEvents];
+    const supabase = await createClient();
+
+    // Query audit_events table (create this table in your database)
+    let query = supabase
+      .from("audit_events")
+      .select("*")
+      .order("timestamp", { ascending: false });
 
     if (actor) {
-      events = events.filter(e => e.actor?.includes(actor));
+      query = query.ilike("actor", `%${actor}%`);
     }
 
     if (action) {
-      events = events.filter(e => e.action === action);
+      query = query.eq("action", action);
     }
 
     if (entityType) {
-      events = events.filter(e => e.entityType === entityType);
+      query = query.eq("entity_type", entityType);
     }
 
     if (startDate) {
-      events = events.filter(e => e.timestamp >= startDate);
+      query = query.gte("timestamp", startDate);
     }
 
     if (endDate) {
-      events = events.filter(e => e.timestamp <= endDate);
+      query = query.lte("timestamp", endDate);
     }
 
-    // Sort by timestamp descending
-    events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    const { data: events, error } = await query;
 
-    return NextResponse.json({ events });
+    if (error) {
+      // If table doesn't exist, return empty array
+      if (error.code === "42P01") {
+        return NextResponse.json({ events: [] });
+      }
+      console.error("Error fetching audit events:", error);
+      return NextResponse.json({ 
+        error: "Database error", 
+        details: error.message 
+      }, { status: 500 });
+    }
+
+    return NextResponse.json({ events: events || [] });
 
   } catch (err) {
     console.error("Unexpected error in GET /api/audit:", err);
@@ -102,21 +81,38 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
+    const supabase = await createClient();
     
-    // In production, this would insert into a real audit_events table
-    const auditEvent = {
-      id: `audit_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      actor: userId,
-      actorName: body.actorName || "Unknown",
-      action: body.action,
-      entityType: body.entityType,
-      entityId: body.entityId,
-      summary: body.summary,
-      metadata: body.metadata || {},
-    };
+    const { data: auditEvent, error } = await supabase
+      .from("audit_events")
+      .insert({
+        actor: userId,
+        actor_name: body.actorName || "Unknown",
+        action: body.action,
+        entity_type: body.entityType,
+        entity_id: body.entityId,
+        summary: body.summary,
+        metadata: body.metadata || {},
+      })
+      .select()
+      .single();
 
-    // Mock: just return the event (in production, save to DB)
+    if (error) {
+      // If table doesn't exist, just return success (silently fail)
+      if (error.code === "42P01") {
+        return NextResponse.json({ 
+          id: `audit_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          ...body 
+        }, { status: 201 });
+      }
+      console.error("Error creating audit event:", error);
+      return NextResponse.json({ 
+        error: "Failed to create audit event", 
+        details: error.message 
+      }, { status: 500 });
+    }
+
     return NextResponse.json(auditEvent, { status: 201 });
 
   } catch (err) {

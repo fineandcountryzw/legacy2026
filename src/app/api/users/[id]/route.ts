@@ -1,49 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-
-// Mock users database
-const mockUsers = [
-  {
-    id: "user_admin_001",
-    email: "admin@fineandcountry.com",
-    firstName: "Admin",
-    lastName: "User",
-    role: "admin",
-    status: "active",
-    lastActiveAt: "2024-02-25T10:30:00Z",
-    createdAt: "2024-01-01T00:00:00Z",
-  },
-  {
-    id: "user_finance_001",
-    email: "finance@fineandcountry.com",
-    firstName: "Finance",
-    lastName: "User",
-    role: "finance",
-    status: "active",
-    lastActiveAt: "2024-02-25T09:15:00Z",
-    createdAt: "2024-01-15T00:00:00Z",
-  },
-  {
-    id: "user_agent_001",
-    email: "agent@fineandcountry.com",
-    firstName: "Agent",
-    lastName: "User",
-    role: "agent",
-    status: "active",
-    lastActiveAt: "2024-02-24T16:45:00Z",
-    createdAt: "2024-02-01T00:00:00Z",
-  },
-  {
-    id: "user_auditor_001",
-    email: "auditor@fineandcountry.com",
-    firstName: "Auditor",
-    lastName: "User",
-    role: "auditor",
-    status: "active",
-    lastActiveAt: "2024-02-20T11:00:00Z",
-    createdAt: "2024-02-10T00:00:00Z",
-  },
-];
+import { createClient } from "@/lib/supabase/server";
 
 // PUT /api/users/[id] - Update user role or status
 export async function PUT(
@@ -59,14 +16,7 @@ export async function PUT(
 
     const { id } = await params;
     const body = await request.json();
-
-    // Find user
-    const userIndex = mockUsers.findIndex(u => u.id === id);
-    if (userIndex === -1) {
-      return NextResponse.json({ 
-        error: "User not found" 
-      }, { status: 404 });
-    }
+    const supabase = await createClient();
 
     // Validate role if provided
     if (body.role) {
@@ -90,16 +40,45 @@ export async function PUT(
       }
     }
 
-    // Update user (mock)
-    const updatedUser = {
-      ...mockUsers[userIndex],
-      role: body.role || mockUsers[userIndex].role,
-      status: body.status || mockUsers[userIndex].status,
-      firstName: body.firstName || mockUsers[userIndex].firstName,
-      lastName: body.lastName || mockUsers[userIndex].lastName,
-    };
+    // Prevent self-deactivation
+    if (id === userId && body.status === "inactive") {
+      return NextResponse.json({ 
+        error: "Cannot deactivate yourself", 
+        details: "You cannot deactivate your own account" 
+      }, { status: 400 });
+    }
 
-    // In production, this would call Clerk's API to update the user
+    const { data: updatedUser, error } = await supabase
+      .from("org_users")
+      .update({
+        role: body.role,
+        status: body.status,
+        first_name: body.firstName,
+        last_name: body.lastName,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === "42P01") {
+        return NextResponse.json({ 
+          error: "Users table not found", 
+          details: "Please run database migrations" 
+        }, { status: 500 });
+      }
+      if (error.code === "PGRST116") {
+        return NextResponse.json({ 
+          error: "User not found" 
+        }, { status: 404 });
+      }
+      console.error("Error updating user:", error);
+      return NextResponse.json({ 
+        error: "Failed to update user", 
+        details: error.message 
+      }, { status: 500 });
+    }
 
     return NextResponse.json(updatedUser);
 
@@ -126,14 +105,6 @@ export async function DELETE(
 
     const { id } = await params;
 
-    // Find user
-    const userIndex = mockUsers.findIndex(u => u.id === id);
-    if (userIndex === -1) {
-      return NextResponse.json({ 
-        error: "User not found" 
-      }, { status: 404 });
-    }
-
     // Prevent self-deletion
     if (id === userId) {
       return NextResponse.json({ 
@@ -142,7 +113,26 @@ export async function DELETE(
       }, { status: 400 });
     }
 
-    // In production, this would call Clerk's API to remove the user
+    const supabase = await createClient();
+
+    const { error } = await supabase
+      .from("org_users")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      if (error.code === "42P01") {
+        return NextResponse.json({ 
+          error: "Users table not found", 
+          details: "Please run database migrations" 
+        }, { status: 500 });
+      }
+      console.error("Error deleting user:", error);
+      return NextResponse.json({ 
+        error: "Failed to delete user", 
+        details: error.message 
+      }, { status: 500 });
+    }
 
     return NextResponse.json({ success: true });
 

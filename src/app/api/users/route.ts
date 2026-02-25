@@ -1,49 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-
-// Mock users - in production this would come from Clerk Organization API
-const mockUsers = [
-  {
-    id: "user_admin_001",
-    email: "admin@fineandcountry.com",
-    firstName: "Admin",
-    lastName: "User",
-    role: "admin",
-    status: "active",
-    lastActiveAt: "2024-02-25T10:30:00Z",
-    createdAt: "2024-01-01T00:00:00Z",
-  },
-  {
-    id: "user_finance_001",
-    email: "finance@fineandcountry.com",
-    firstName: "Finance",
-    lastName: "User",
-    role: "finance",
-    status: "active",
-    lastActiveAt: "2024-02-25T09:15:00Z",
-    createdAt: "2024-01-15T00:00:00Z",
-  },
-  {
-    id: "user_agent_001",
-    email: "agent@fineandcountry.com",
-    firstName: "Agent",
-    lastName: "User",
-    role: "agent",
-    status: "active",
-    lastActiveAt: "2024-02-24T16:45:00Z",
-    createdAt: "2024-02-01T00:00:00Z",
-  },
-  {
-    id: "user_auditor_001",
-    email: "auditor@fineandcountry.com",
-    firstName: "Auditor",
-    lastName: "User",
-    role: "auditor",
-    status: "active",
-    lastActiveAt: "2024-02-20T11:00:00Z",
-    createdAt: "2024-02-10T00:00:00Z",
-  },
-];
+import { createClient } from "@/lib/supabase/server";
 
 // GET /api/users - Get all organization users
 export async function GET(request: NextRequest) {
@@ -58,17 +15,37 @@ export async function GET(request: NextRequest) {
     const role = searchParams.get("role");
     const status = searchParams.get("status");
 
-    let users = [...mockUsers];
+    const supabase = await createClient();
+
+    // Query org_users table (create this table in your database)
+    let query = supabase
+      .from("org_users")
+      .select("*")
+      .order("created_at", { ascending: false });
 
     if (role) {
-      users = users.filter(u => u.role === role);
+      query = query.eq("role", role);
     }
 
     if (status) {
-      users = users.filter(u => u.status === status);
+      query = query.eq("status", status);
     }
 
-    return NextResponse.json({ users });
+    const { data: users, error } = await query;
+
+    if (error) {
+      // If table doesn't exist, return empty array
+      if (error.code === "42P01") {
+        return NextResponse.json({ users: [] });
+      }
+      console.error("Error fetching users:", error);
+      return NextResponse.json({ 
+        error: "Database error", 
+        details: error.message 
+      }, { status: 500 });
+    }
+
+    return NextResponse.json({ users: users || [] });
 
   } catch (err) {
     console.error("Unexpected error in GET /api/users:", err);
@@ -107,28 +84,50 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
+    const supabase = await createClient();
+
     // Check for duplicate email
-    const existingUser = mockUsers.find(u => u.email === body.email);
-    if (existingUser) {
+    const { data: existing } = await supabase
+      .from("org_users")
+      .select("id")
+      .eq("email", body.email)
+      .single();
+
+    if (existing) {
       return NextResponse.json({ 
         error: "User already exists", 
         details: "A user with this email already exists" 
       }, { status: 409 });
     }
 
-    // Create new user (mock)
-    const newUser = {
-      id: `user_${Date.now()}`,
-      email: body.email,
-      firstName: body.firstName || "",
-      lastName: body.lastName || "",
-      role: body.role,
-      status: "pending", // Pending until they accept invitation
-      lastActiveAt: null,
-      createdAt: new Date().toISOString(),
-    };
+    // Create new user
+    const { data: newUser, error } = await supabase
+      .from("org_users")
+      .insert({
+        email: body.email,
+        first_name: body.firstName || "",
+        last_name: body.lastName || "",
+        role: body.role,
+        status: "pending",
+        invited_by: userId,
+      })
+      .select()
+      .single();
 
-    // In production, this would call Clerk's Organization API to invite the user
+    if (error) {
+      // If table doesn't exist
+      if (error.code === "42P01") {
+        return NextResponse.json({ 
+          error: "Users table not found", 
+          details: "Please run database migrations" 
+        }, { status: 500 });
+      }
+      console.error("Error creating user:", error);
+      return NextResponse.json({ 
+        error: "Failed to create user", 
+        details: error.message 
+      }, { status: 500 });
+    }
 
     return NextResponse.json(newUser, { status: 201 });
 
