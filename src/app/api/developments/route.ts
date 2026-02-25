@@ -8,12 +8,16 @@ export async function GET() {
     const { userId } = await auth();
     
     if (!userId) {
+      console.log("API /api/developments: No userId from Clerk");
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    console.log("API /api/developments: userId =", userId);
 
     let supabase;
     try {
       supabase = await createClient();
+      console.log("API /api/developments: Supabase client created");
     } catch (err) {
       console.error("Failed to create Supabase client:", err);
       return NextResponse.json({ 
@@ -22,7 +26,25 @@ export async function GET() {
       }, { status: 500 });
     }
 
-    // Simple query first - just developments
+    // First, let's try a simple query without the user_id filter to see if table exists
+    const { data: allDevs, error: tableError } = await supabase
+      .from("developments")
+      .select("count")
+      .limit(1);
+
+    if (tableError) {
+      console.error("API /api/developments: Table error:", tableError);
+      return NextResponse.json({ 
+        error: "Database table error", 
+        details: tableError.message,
+        code: tableError.code,
+        hint: "Run setup-database.sql in Supabase SQL Editor"
+      }, { status: 500 });
+    }
+
+    console.log("API /api/developments: Table exists, querying for user:", userId);
+
+    // Query developments for this user
     const { data: developments, error } = await supabase
       .from("developments")
       .select("*")
@@ -30,19 +52,18 @@ export async function GET() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      if (error.code === "22P02") {
-        console.warn("Skipping developments query because user_id type does not match Clerk user IDs.", error);
-        return NextResponse.json([]);
-      }
-      console.error("Error fetching developments:", error);
+      console.error("API /api/developments: Query error:", error);
       return NextResponse.json({ 
-        error: "Database error", 
+        error: "Database query error", 
         details: error.message,
-        code: error.code 
+        code: error.code,
+        userId: userId
       }, { status: 500 });
     }
 
-    // Fetch related data separately to avoid join issues
+    console.log("API /api/developments: Found", developments?.length || 0, "developments");
+
+    // Fetch related data separately
     const developmentIds = developments?.map(d => d.id) || [];
     
     let standTypes: any[] = [];
@@ -101,6 +122,7 @@ export async function GET() {
     })) || [];
 
     return NextResponse.json(transformed);
+
   } catch (err) {
     console.error("Unexpected error in GET /api/developments:", err);
     return NextResponse.json({ 
