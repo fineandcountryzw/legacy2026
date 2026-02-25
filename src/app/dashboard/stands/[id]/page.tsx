@@ -19,7 +19,7 @@ interface Stand {
     developmentName: string
     developmentId: string
     standTypeLabel?: string
-    status: string
+    status: "Available" | "Sold" | "Unassigned" | "Disputed"
     clientName?: string
     agreedPrice?: number
     totalPaid?: number
