@@ -230,10 +230,10 @@ export default function StandDetailPage() {
                             <Button size="sm"><ShieldCheck className="mr-2 h-4 w-4" /> Generate & Sign</Button>
                         </div>
                     </div>
-                    <div className="aspect-[1/1.4] w-full max-w-2xl mx-auto rounded-lg border-2 border-dashed flex flex-col items-center justify-center p-12 text-slate-300 bg-slate-50">
+                    <div className="aspect-[1/1.4] w-full max-w-2xl mx-auto rounded-lg border-2 border-dashed flex flex-col items-center justify-center p-12 text-slate-400 bg-slate-50">
                         <FileText className="h-16 w-16 mb-4" />
-                        <p className="font-medium">Statement PDF Generation Placeholder</p>
-                        <p className="text-sm">High-fidelity branded statement will be generated here.</p>
+                        <p className="font-medium">Statement Preview</p>
+                        <p className="text-sm">Click &quot;Generate & Sign&quot; to create a statement</p>
                     </div>
                 </div>
             )

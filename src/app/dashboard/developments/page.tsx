@@ -157,7 +157,7 @@ export default function DevelopmentsPage() {
                                     <Input 
                                         id="name" 
                                         name="name" 
-                                        placeholder="e.g. Green Valley Estate" 
+                                        placeholder="Enter development name" 
                                         defaultValue={selectedDev?.name} 
                                         required
                                     />
@@ -167,7 +167,7 @@ export default function DevelopmentsPage() {
                                     <Input 
                                         id="code" 
                                         name="code" 
-                                        placeholder="e.g. GVE" 
+                                        placeholder="Enter code" 
                                         defaultValue={selectedDev?.code}
                                         required
                                     />
