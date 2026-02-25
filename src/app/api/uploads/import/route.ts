@@ -86,7 +86,14 @@ export async function POST(request: NextRequest) {
             .single();
 
           if (standError) {
+            console.error(`Stand inventory error for ${stand.standNumber}:`, standError);
             importSummary.errors.push(`Stand ${stand.standNumber}: ${standError.message}`);
+            continue;
+          }
+          
+          if (!standInv) {
+            console.error(`No stand inventory returned for ${stand.standNumber}`);
+            importSummary.errors.push(`Stand ${stand.standNumber}: Failed to create stand inventory`);
             continue;
           }
 
@@ -135,12 +142,10 @@ export async function POST(request: NextRequest) {
             if (!txError) {
               importSummary.transactionsCreated++;
               
-              // Track all category totals
-              if (tx.side === 'RECEIPT') {
+              // Track all category totals properly
+              if (tx.category === 'CLIENT_DEPOSIT' || tx.category === 'CLIENT_INSTALLMENT') {
                 importSummary.clientPaymentsTotal += tx.amount;
-              }
-              
-              if (tx.category === 'DEVELOPER_PAYMENT') {
+              } else if (tx.category === 'DEVELOPER_PAYMENT') {
                 importSummary.developerPaymentsTotal += tx.amount;
               } else if (tx.category === 'LEGAL_FEE') {
                 importSummary.legalFeesTotal += tx.amount;
@@ -181,8 +186,10 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error("Import error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Failed to import";
+    importSummary.errors.push(`Fatal error: ${errorMessage}`);
     return NextResponse.json({
-      error: error instanceof Error ? error.message : "Failed to import",
+      error: errorMessage,
       summary: importSummary
     }, { status: 500 });
   }
