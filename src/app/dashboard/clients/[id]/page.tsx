@@ -39,7 +39,7 @@ interface Stand {
   standNumber: string;
   developmentName: string;
   currency: string;
-  status: string;
+  status: "Available" | "Sold" | "Unassigned" | "Disputed";
   agreedPrice: number;
   totalPaid: number;
   balance: number;
