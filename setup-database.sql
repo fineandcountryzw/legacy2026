@@ -1,18 +1,18 @@
 -- =====================================================
 -- STAND INVENTORY PLATFORM - DATABASE SETUP
--- Safe to re-run (handles existing tables)
--- Run this in Supabase SQL Editor: https://supabase.com/dashboard
+-- FIXED: user_id as TEXT for Clerk compatibility
+-- Run this in Supabase SQL Editor
 -- =====================================================
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- =====================================================
--- 1. BRAND PROFILES (Global + Per Development)
+-- 1. BRAND PROFILES (user_id as TEXT for Clerk)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS brand_profiles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,  -- Changed from UUID to TEXT for Clerk
     company_name TEXT NOT NULL,
     logo_url TEXT,
     contact_details JSONB DEFAULT '{}',
@@ -25,11 +25,11 @@ CREATE TABLE IF NOT EXISTS brand_profiles (
 );
 
 -- =====================================================
--- 2. DEVELOPMENTS
+-- 2. DEVELOPMENTS (user_id as TEXT for Clerk)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS developments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,  -- Changed from UUID to TEXT for Clerk
     name TEXT NOT NULL,
     code TEXT NOT NULL,
     currency TEXT DEFAULT 'USD' CHECK (currency IN ('USD', 'ZIG', 'ZAR')),
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS stand_inventory (
 );
 
 -- =====================================================
--- 6. DEVELOPMENT STANDS (Junction: links inventory to development)
+-- 6. DEVELOPMENT STANDS
 -- =====================================================
 CREATE TABLE IF NOT EXISTS development_stands (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -98,11 +98,11 @@ CREATE TABLE IF NOT EXISTS development_stands (
 );
 
 -- =====================================================
--- 7. UPLOADS
+-- 7. UPLOADS (user_id as TEXT for Clerk)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS uploads (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,  -- Changed from UUID to TEXT for Clerk
     development_id UUID REFERENCES developments(id) ON DELETE SET NULL,
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
@@ -117,11 +117,11 @@ CREATE TABLE IF NOT EXISTS uploads (
 );
 
 -- =====================================================
--- 8. PAYMENT TRANSACTIONS
+-- 8. PAYMENT TRANSACTIONS (user_id as TEXT for Clerk)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS payment_transactions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,  -- Changed from UUID to TEXT for Clerk
     upload_id UUID REFERENCES uploads(id) ON DELETE SET NULL,
     development_id UUID REFERENCES developments(id) ON DELETE CASCADE,
     stand_id UUID REFERENCES development_stands(id) ON DELETE SET NULL,
@@ -148,11 +148,11 @@ CREATE TABLE IF NOT EXISTS transaction_allocations (
 );
 
 -- =====================================================
--- 10. CLIENTS
+-- 10. CLIENTS (user_id as TEXT for Clerk)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS clients (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,  -- Changed from UUID to TEXT for Clerk
     name TEXT NOT NULL,
     email TEXT,
     phone TEXT,
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS clients (
 );
 
 -- =====================================================
--- INDEXES FOR PERFORMANCE (safe to re-run)
+-- INDEXES
 -- =====================================================
 CREATE INDEX IF NOT EXISTS idx_developments_user_id ON developments(user_id);
 CREATE INDEX IF NOT EXISTS idx_development_stands_dev_id ON development_stands(development_id);
@@ -175,7 +175,7 @@ CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads(user_id);
 CREATE INDEX IF NOT EXISTS idx_clients_user_id ON clients(user_id);
 
 -- =====================================================
--- RLS POLICIES (drop existing first to avoid conflicts)
+-- ENABLE RLS
 -- =====================================================
 ALTER TABLE IF EXISTS brand_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS developments ENABLE ROW LEVEL SECURITY;
@@ -188,7 +188,9 @@ ALTER TABLE IF EXISTS payment_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS transaction_allocations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS clients ENABLE ROW LEVEL SECURITY;
 
--- Drop existing policies to avoid conflicts
+-- =====================================================
+-- DROP EXISTING POLICIES
+-- =====================================================
 DROP POLICY IF EXISTS "Users own their brand_profiles" ON brand_profiles;
 DROP POLICY IF EXISTS "Users own their developments" ON developments;
 DROP POLICY IF EXISTS "Users own their stand_types" ON development_stand_types;
@@ -202,24 +204,47 @@ DROP POLICY IF EXISTS "Stand inventory is readable by all" ON stand_inventory;
 DROP POLICY IF EXISTS "Users can insert stand_inventory" ON stand_inventory;
 DROP POLICY IF EXISTS "Users can update stand_inventory" ON stand_inventory;
 
--- RLS: Users can only see their own data
-CREATE POLICY "Users own their brand_profiles" ON brand_profiles FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their developments" ON developments FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their stand_types" ON development_stand_types FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND d.user_id = auth.uid()));
-CREATE POLICY "Users own their cost_items" ON development_cost_items FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND d.user_id = auth.uid()));
-CREATE POLICY "Users own their stands" ON development_stands FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND d.user_id = auth.uid()));
-CREATE POLICY "Users own their uploads" ON uploads FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their transactions" ON payment_transactions FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their allocations" ON transaction_allocations FOR ALL USING (EXISTS (SELECT 1 FROM payment_transactions t WHERE t.id = transaction_id AND t.user_id = auth.uid()));
-CREATE POLICY "Users own their clients" ON clients FOR ALL USING (auth.uid() = user_id);
+-- =====================================================
+-- RLS POLICIES (using request.jwt.claims.sub for Clerk user ID)
+-- =====================================================
 
--- Allow all users to read stand_inventory (shared canonical data)
+-- For Clerk integration, we use (auth.jwt() ->> 'sub') to get the user ID
+-- or we can use request.jwt.claims ->> 'sub'
+
+CREATE POLICY "Users own their brand_profiles" ON brand_profiles 
+  FOR ALL USING ((auth.jwt() ->> 'sub') = user_id);
+
+CREATE POLICY "Users own their developments" ON developments 
+  FOR ALL USING ((auth.jwt() ->> 'sub') = user_id);
+
+CREATE POLICY "Users own their stand_types" ON development_stand_types 
+  FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND (auth.jwt() ->> 'sub') = d.user_id));
+
+CREATE POLICY "Users own their cost_items" ON development_cost_items 
+  FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND (auth.jwt() ->> 'sub') = d.user_id));
+
+CREATE POLICY "Users own their stands" ON development_stands 
+  FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND (auth.jwt() ->> 'sub') = d.user_id));
+
+CREATE POLICY "Users own their uploads" ON uploads 
+  FOR ALL USING ((auth.jwt() ->> 'sub') = user_id);
+
+CREATE POLICY "Users own their transactions" ON payment_transactions 
+  FOR ALL USING ((auth.jwt() ->> 'sub') = user_id);
+
+CREATE POLICY "Users own their allocations" ON transaction_allocations 
+  FOR ALL USING (EXISTS (SELECT 1 FROM payment_transactions t WHERE t.id = transaction_id AND (auth.jwt() ->> 'sub') = t.user_id));
+
+CREATE POLICY "Users own their clients" ON clients 
+  FOR ALL USING ((auth.jwt() ->> 'sub') = user_id);
+
+-- Allow all users to read stand_inventory
 CREATE POLICY "Stand inventory is readable by all" ON stand_inventory FOR SELECT USING (true);
 CREATE POLICY "Users can insert stand_inventory" ON stand_inventory FOR INSERT WITH CHECK (true);
 CREATE POLICY "Users can update stand_inventory" ON stand_inventory FOR UPDATE USING (true);
 
 -- =====================================================
--- TRIGGERS FOR UPDATED_AT
+-- TRIGGERS
 -- =====================================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -236,30 +261,28 @@ CREATE TRIGGER update_brand_profiles_updated_at BEFORE UPDATE ON brand_profiles 
 CREATE TRIGGER update_developments_updated_at BEFORE UPDATE ON developments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =====================================================
--- STORAGE BUCKET FOR UPLOADS
+-- STORAGE BUCKET
 -- =====================================================
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES (
   'uploads',
   'uploads',
   false,
-  10485760, -- 10MB limit
+  10485760,
   ARRAY['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel']
 )
 ON CONFLICT (id) DO NOTHING;
 
--- Drop existing storage policies
 DROP POLICY IF EXISTS "Users can upload to their own folder" ON storage.objects;
 DROP POLICY IF EXISTS "Users can read their own uploads" ON storage.objects;
 DROP POLICY IF EXISTS "Users can delete their own uploads" ON storage.objects;
 
--- Storage policies
 CREATE POLICY "Users can upload to their own folder" 
 ON storage.objects FOR INSERT 
 TO authenticated 
 WITH CHECK (
   bucket_id = 'uploads' 
-  AND (storage.foldername(name))[1] = auth.uid()::text
+  AND (storage.foldername(name))[1] = (auth.jwt() ->> 'sub')
 );
 
 CREATE POLICY "Users can read their own uploads" 
@@ -267,7 +290,7 @@ ON storage.objects FOR SELECT
 TO authenticated 
 USING (
   bucket_id = 'uploads' 
-  AND (storage.foldername(name))[1] = auth.uid()::text
+  AND (storage.foldername(name))[1] = (auth.jwt() ->> 'sub')
 );
 
 CREATE POLICY "Users can delete their own uploads" 
@@ -275,58 +298,37 @@ ON storage.objects FOR DELETE
 TO authenticated 
 USING (
   bucket_id = 'uploads' 
-  AND (storage.foldername(name))[1] = auth.uid()::text
+  AND (storage.foldername(name))[1] = (auth.jwt() ->> 'sub')
 );
 
 -- =====================================================
--- ADD COLUMNS IF NOT EXIST (Migration 003)
+-- ADD EXTRA COLUMNS (if not exist)
 -- =====================================================
 DO $$
 BEGIN
-    -- Email
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='developments' AND column_name='email') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='developments' AND column_name='email') THEN
         ALTER TABLE developments ADD COLUMN email TEXT;
     END IF;
-    
-    -- Phone
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='developments' AND column_name='phone') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='developments' AND column_name='phone') THEN
         ALTER TABLE developments ADD COLUMN phone TEXT;
     END IF;
-    
-    -- Address
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='developments' AND column_name='address') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='developments' AND column_name='address') THEN
         ALTER TABLE developments ADD COLUMN address TEXT;
     END IF;
-    
-    -- Website
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='developments' AND column_name='website') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='developments' AND column_name='website') THEN
         ALTER TABLE developments ADD COLUMN website TEXT;
     END IF;
-    
-    -- Primary color
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='developments' AND column_name='primary_color') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='developments' AND column_name='primary_color') THEN
         ALTER TABLE developments ADD COLUMN primary_color TEXT DEFAULT '#0f172a';
     END IF;
-    
-    -- Secondary color
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='developments' AND column_name='secondary_color') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='developments' AND column_name='secondary_color') THEN
         ALTER TABLE developments ADD COLUMN secondary_color TEXT DEFAULT '#2563eb';
     END IF;
-    
-    -- Accent color
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='developments' AND column_name='accent_color') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='developments' AND column_name='accent_color') THEN
         ALTER TABLE developments ADD COLUMN accent_color TEXT DEFAULT '#3b82f6';
     END IF;
 END $$;
 
--- Update existing rows to have default colors
 UPDATE developments 
 SET primary_color = COALESCE(primary_color, '#0f172a'),
     secondary_color = COALESCE(secondary_color, '#2563eb'), 
@@ -336,4 +338,4 @@ WHERE primary_color IS NULL;
 -- =====================================================
 -- DONE!
 -- =====================================================
-SELECT 'Database setup complete! All tables and policies are ready.' as status;
+SELECT 'Database setup complete with Clerk-compatible TEXT user_id columns!' as status;

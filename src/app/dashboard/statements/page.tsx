@@ -1,17 +1,53 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Download, Printer, Search } from "lucide-react";
-import { MOCK_STANDS } from "@/lib/constants";
+import { FileText, Download, Printer, Search, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+
+interface Stand {
+    id: string;
+    standNumber: string;
+    developmentName: string;
+    clientName?: string;
+    totalPaid?: number;
+    balance?: number;
+}
 
 export default function StatementsPage() {
+    const [stands, setStands] = useState<Stand[]>([]);
     const [selectedStand, setSelectedStand] = useState<string | null>(null);
     const [isPreviewing, setIsPreviewing] = useState(false);
+    const [loading, setLoading] = useState(true);
 
-    const standData = selectedStand ? MOCK_STANDS.find(s => s.id === selectedStand) : null;
+    useEffect(() => {
+        fetchStands();
+    }, []);
+
+    const fetchStands = async () => {
+        try {
+            setLoading(true);
+            const res = await fetch("/api/stands");
+            if (!res.ok) throw new Error("Failed to fetch stands");
+            const data = await res.json();
+            setStands(data.stands || []);
+        } catch (err) {
+            toast.error("Failed to load stands");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const standData = selectedStand ? stands.find(s => s.id === selectedStand) : null;
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-8">
@@ -39,12 +75,13 @@ export default function StatementsPage() {
                                 <select
                                     className="w-full flex h-9 items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
                                     onChange={(e) => {
-                                        setSelectedStand(e.target.value);
+                                        setSelectedStand(e.target.value || null);
                                         setIsPreviewing(false);
                                     }}
+                                    value={selectedStand || ""}
                                 >
                                     <option value="">Select a stand...</option>
-                                    {MOCK_STANDS.map((stand) => (
+                                    {stands.map((stand) => (
                                         <option key={stand.id} value={stand.id}>
                                             {stand.standNumber} - {stand.developmentName}
                                         </option>
@@ -74,11 +111,11 @@ export default function StatementsPage() {
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <p className="text-xs text-slate-500">Total Paid</p>
-                                            <p className="font-semibold">${standData.totalPaid.toLocaleString()}</p>
+                                            <p className="font-semibold">${(standData.totalPaid || 0).toLocaleString()}</p>
                                         </div>
                                         <div>
                                             <p className="text-xs text-slate-500">Out. Balance</p>
-                                            <p className="font-semibold text-rose-600">${standData.balance.toLocaleString()}</p>
+                                            <p className="font-semibold text-rose-600">${(standData.balance || 0).toLocaleString()}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -106,11 +143,11 @@ export default function StatementsPage() {
 
                             <Card className="shadow-lg border-2">
                                 <CardContent className="p-12 min-h-[600px] flex flex-col">
-                                    {/* Mock Statement Header */}
+                                    {/* Statement Header */}
                                     <div className="flex justify-between border-b pb-8 mb-8">
                                         <div>
                                             <h2 className="text-2xl font-bold uppercase tracking-tight text-slate-900 font-sans">Statement of Account</h2>
-                                            <p className="text-sm text-slate-500 mt-1">Generated: Feb 25, 2026</p>
+                                            <p className="text-sm text-slate-500 mt-1">Generated: {new Date().toLocaleDateString()}</p>
                                         </div>
                                         <div className="text-right">
                                             <p className="font-bold">StandInv Platform</p>
@@ -118,12 +155,12 @@ export default function StatementsPage() {
                                         </div>
                                     </div>
 
-                                    {/* Mock Statement Body */}
+                                    {/* Statement Body */}
                                     <div className="flex-1 space-y-8">
                                         <div className="grid grid-cols-2 gap-8">
                                             <div>
                                                 <p className="text-xs font-bold text-slate-400 uppercase mb-1">To</p>
-                                                <p className="font-semibold">{standData.clientName}</p>
+                                                <p className="font-semibold">{standData.clientName || "Client"}</p>
                                                 <p className="text-sm text-slate-500">Zimbabwe</p>
                                             </div>
                                             <div className="text-right">
@@ -145,30 +182,19 @@ export default function StatementsPage() {
                                             </thead>
                                             <tbody>
                                                 <tr className="border-b">
-                                                    <td className="py-3">Jan 01, 2024</td>
-                                                    <td className="py-3">Initial Stand Allocation</td>
-                                                    <td className="py-3 text-right">$15,000.00</td>
-                                                    <td className="py-3 text-right">-</td>
-                                                    <td className="py-3 text-right">$15,000.00</td>
-                                                </tr>
-                                                <tr className="border-b">
-                                                    <td className="py-3">Jan 15, 2024</td>
-                                                    <td className="py-3">Deposit Payment (REF: DEP001)</td>
-                                                    <td className="py-3 text-right">-</td>
-                                                    <td className="py-3 text-right">$5,000.00</td>
-                                                    <td className="py-3 text-right">$10,000.00</td>
+                                                    <td className="py-3 text-slate-400 italic" colSpan={5}>No transactions recorded</td>
                                                 </tr>
                                             </tbody>
                                         </table>
                                     </div>
 
-                                    {/* Mock Statement Footer */}
+                                    {/* Statement Footer */}
                                     <div className="mt-auto pt-8 border-t flex justify-between items-center bg-slate-50 -mx-12 px-12 -mb-6 pb-6">
                                         <div className="text-sm text-slate-500">
-                                            Total Outstanding Balance as of Feb 25, 2026
+                                            Total Outstanding Balance as of {new Date().toLocaleDateString()}
                                         </div>
                                         <div className="text-2xl font-bold text-rose-600">
-                                            ${standData.balance.toLocaleString()}.00
+                                            ${(standData.balance || 0).toLocaleString()}.00
                                         </div>
                                     </div>
                                 </CardContent>
