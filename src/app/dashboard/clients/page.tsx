@@ -90,7 +90,7 @@ export default function ClientsPage() {
     client.id_number?.includes(searchQuery)
   );
 
-  const columns = [
+  const columns: any[] = [
     {
       header: "Client",
       accessorKey: "name",

@@ -83,7 +83,7 @@ export default function ClientDetailPage() {
     }
   }
 
-  const standColumns = [
+  const standColumns: any[] = [
     {
       header: "Stand",
       accessorKey: "standNumber",
@@ -137,7 +137,7 @@ export default function ClientDetailPage() {
     },
   ];
 
-  const receiptColumns = [
+  const receiptColumns: any[] = [
     {
       header: "Date",
       accessorKey: "date",

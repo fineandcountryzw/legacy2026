@@ -181,7 +181,7 @@ export default function UsersPage() {
     user.lastName?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const columns = [
+  const columns: any[] = [
     {
       header: "User",
       accessorKey: "email",
