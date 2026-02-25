@@ -109,6 +109,7 @@ interface ImportSummary {
 }
 
 export default function UploadsPage() {
+  const NO_DEVELOPMENT_VALUE = "__none__";
   const [history, setHistory] = useState<UploadHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -121,7 +122,7 @@ export default function UploadsPage() {
   const [activeTab, setActiveTab] = useState("summary");
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
-  const [selectedDevelopment, setSelectedDevelopment] = useState<string>("");
+  const [selectedDevelopment, setSelectedDevelopment] = useState<string>(NO_DEVELOPMENT_VALUE);
   const [developments, setDevelopments] = useState<{ id: string; name: string; code: string }[]>([]);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -222,7 +223,7 @@ export default function UploadsPage() {
         body: JSON.stringify({
           fileData: fileBuffer,
           filename: selectedFile.name,
-          developmentId: selectedDevelopment || null
+          developmentId: selectedDevelopment === NO_DEVELOPMENT_VALUE ? null : selectedDevelopment
         })
       });
 
@@ -297,6 +298,7 @@ export default function UploadsPage() {
     setFileBuffer(null);
     setImportSummary(null);
     setSelectedEstate("all");
+    setSelectedDevelopment(NO_DEVELOPMENT_VALUE);
     toast.info("Upload cleared");
   };
 
@@ -738,7 +740,7 @@ export default function UploadsPage() {
                         <SelectValue placeholder="Select development to link stands..." />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">None (Standalone)</SelectItem>
+                        <SelectItem value={NO_DEVELOPMENT_VALUE}>None (Standalone)</SelectItem>
                         {developments.map((dev) => (
                           <SelectItem key={dev.id} value={dev.id}>
                             {dev.name} ({dev.code})

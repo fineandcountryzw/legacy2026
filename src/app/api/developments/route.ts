@@ -21,6 +21,10 @@ export async function GET() {
       .order("created_at", { ascending: false });
 
     if (error) {
+      if (error.code === "22P02") {
+        console.warn("Skipping developments query because user_id type does not match Clerk user IDs.", error);
+        return NextResponse.json([]);
+      }
       console.error("Error fetching developments:", error);
       return NextResponse.json({ 
         error: "Database error", 

@@ -16,14 +16,15 @@ export async function GET() {
 
     const { data: uploads, error } = await supabase
       .from("uploads")
-      .select(`
-        *,
-        developments(name)
-      `)
+      .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
     if (error) {
+      if (error.code === "22P02") {
+        console.warn("Skipping uploads query because user_id type does not match Clerk user IDs.", error);
+        return NextResponse.json([]);
+      }
       console.error("Error fetching uploads:", error);
       return NextResponse.json({ 
         error: "Database error", 
@@ -32,11 +33,34 @@ export async function GET() {
       }, { status: 500 });
     }
 
+    const developmentIds = Array.from(
+      new Set(
+        (uploads || [])
+          .map((u: any) => u.development_id)
+          .filter((id: string | null) => Boolean(id))
+      )
+    ) as string[];
+
+    let developmentNames = new Map<string, string>();
+
+    if (developmentIds.length > 0) {
+      const { data: developmentRows, error: developmentError } = await supabase
+        .from("developments")
+        .select("id, name")
+        .in("id", developmentIds);
+
+      if (developmentError) {
+        console.warn("Failed to load development names for uploads:", developmentError);
+      } else {
+        developmentNames = new Map((developmentRows || []).map((d: any) => [d.id, d.name]));
+      }
+    }
+
     // Transform to match frontend types
     const transformed = uploads?.map((u: any) => ({
       id: u.id,
       fileName: u.file_name,
-      developmentName: u.developments?.name,
+      developmentName: u.development_id ? developmentNames.get(u.development_id) : undefined,
       date: u.created_at,
       standsDetected: u.stands_detected,
       transactionsDetected: u.transactions_detected,

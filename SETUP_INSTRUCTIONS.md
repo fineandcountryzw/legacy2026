@@ -5,9 +5,12 @@
 1. Go to https://app.supabase.com/project/hbtqeeftiirtosexdqgc
 2. Click **SQL Editor** in the left sidebar
 3. Click **New Query**
-4. Copy the contents of `supabase/migrations/001_initial_schema.sql`
-5. Click **Run**
-6. Repeat for `supabase/migrations/002_storage_bucket.sql`
+4. Run all SQL files in `supabase/migrations` in filename order:
+   - `001_initial_schema.sql`
+   - `002_storage_bucket.sql`
+   - `003_add_developer_details.sql`
+   - `004_clerk_user_ids.sql`
+5. Click **Run** for each file before moving to the next one
 
 ## Step 2: Environment Variables
 
@@ -73,6 +76,7 @@ The parser will:
 - Check that the SQL schema was applied correctly
 - Verify environment variables are set
 - Check browser console for errors
+- If you previously only applied `001` and `002`, apply `003` and `004` as well
 
 ### "Upload failed"
 - Verify storage bucket "uploads" was created
