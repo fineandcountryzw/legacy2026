@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 // GET /api/receipts/[id] - Get receipt details
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { userId } = await auth();
@@ -14,7 +14,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const supabase = await createClient();
 
     const { data: upload, error } = await supabase
@@ -80,7 +80,7 @@ export async function GET(
 // PUT /api/receipts/[id] - Void a receipt (update status)
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { userId } = await auth();
@@ -89,7 +89,7 @@ export async function PUT(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const body = await request.json();
     const supabase = await createClient();
 
@@ -134,7 +134,7 @@ export async function PUT(
 // DELETE /api/receipts/[id] - Delete receipt
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { userId } = await auth();
@@ -143,7 +143,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await params;
     const supabase = await createClient();
 
     // First delete related transactions
