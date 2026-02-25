@@ -6,7 +6,8 @@ import {
     RefreshCw,
     Users,
     FileText,
-    Settings
+    Settings,
+    BarChart3
 } from "lucide-react";
 import { NavItem, Stand, Development, Transaction } from "@/types";
 
@@ -16,6 +17,7 @@ export const navItems: NavItem[] = [
     { title: "Stand Inventory", href: "/dashboard/stands", icon: MapIcon },
     { title: "Developments", href: "/dashboard/developments", icon: Building2 },
     { title: "Reconciliation", href: "/dashboard/reconciliation", icon: RefreshCw },
+    { title: "Reports", href: "/dashboard/reports", icon: BarChart3 },
     { title: "Clients", href: "/dashboard/clients", icon: Users },
     { title: "Statements", href: "/dashboard/statements", icon: FileText },
     { title: "Settings", href: "/dashboard/settings", icon: Settings },
@@ -46,6 +48,7 @@ export const MOCK_DEVELOPMENTS: Development[] = [
         branding: {
             id: "b-1",
             companyName: "Fine & Country",
+            contactDetails: "contact@fineandcountry.com",
             colors: { primary: "#0f172a", secondary: "#2563eb", accent: "#3b82f6" }
         }
     }
