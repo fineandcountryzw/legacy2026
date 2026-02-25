@@ -32,9 +32,11 @@ export default function DevelopmentsPage() {
     async function fetchDevelopments() {
         try {
             setLoading(true)
+            setError(null)
             const response = await fetch("/api/developments")
             if (!response.ok) {
-                throw new Error("Failed to fetch developments")
+                const errorData = await response.json()
+                throw new Error(errorData.details || errorData.error || "Failed to fetch developments")
             }
             const data = await response.json()
             setDevelopments(data)

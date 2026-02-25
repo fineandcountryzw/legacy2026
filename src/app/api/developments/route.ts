@@ -26,19 +26,19 @@ export async function GET() {
       }, { status: 500 });
     }
 
-    // First, let's try a simple query without the user_id filter to see if table exists
-    const { data: allDevs, error: tableError } = await supabase
+    // First check: Does the developments table exist?
+    const { data: tableCheck, error: tableError } = await supabase
       .from("developments")
-      .select("count")
+      .select("id")
       .limit(1);
 
     if (tableError) {
       console.error("API /api/developments: Table error:", tableError);
       return NextResponse.json({ 
-        error: "Database table error", 
+        error: "Database table not found", 
         details: tableError.message,
         code: tableError.code,
-        hint: "Run setup-database.sql in Supabase SQL Editor"
+        hint: "Run setup-database.sql in Supabase SQL Editor to create tables"
       }, { status: 500 });
     }
 
@@ -57,7 +57,8 @@ export async function GET() {
         error: "Database query error", 
         details: error.message,
         code: error.code,
-        userId: userId
+        userId: userId,
+        hint: "Check if user_id column is TEXT type (run fix-clerk-schema.sql)"
       }, { status: 500 });
     }
 
