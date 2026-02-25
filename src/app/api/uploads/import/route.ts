@@ -5,6 +5,19 @@ import { parseLedgerFile } from "@/lib/import/ledger-parser";
 
 // POST /api/uploads/import - Import ledger data to database
 export async function POST(request: NextRequest) {
+  const importSummary = {
+    uploadId: '',
+    estatesProcessed: 0,
+    standsCreated: 0,
+    transactionsCreated: 0,
+    clientPaymentsTotal: 0,
+    developerPaymentsTotal: 0,
+    legalFeesTotal: 0,
+    fcFeesTotal: 0,
+    realtorPaymentsTotal: 0,
+    errors: [] as string[]
+  };
+
   try {
     const { userId } = await auth();
     
@@ -23,20 +36,6 @@ export async function POST(request: NextRequest) {
       }, { status: 500 });
     }
 
-    const importSummary = {
-    uploadId: '',
-    estatesProcessed: 0,
-    standsCreated: 0,
-    transactionsCreated: 0,
-    clientPaymentsTotal: 0,
-    developerPaymentsTotal: 0,
-    legalFeesTotal: 0,
-    fcFeesTotal: 0,
-    realtorPaymentsTotal: 0,
-    errors: [] as string[]
-  };
-
-  try {
     const { fileData, filename, developmentId } = await request.json();
     
     // Parse the file data (base64 to ArrayBuffer)
