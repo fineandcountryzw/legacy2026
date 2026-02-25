@@ -5,14 +5,25 @@ import { parseLedgerFile } from "@/lib/import/ledger-parser";
 
 // POST /api/uploads/import - Import ledger data to database
 export async function POST(request: NextRequest) {
-  const { userId } = await auth();
-  
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  try {
+    const { userId } = await auth();
+    
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-  const supabase = await createClient();
-  const importSummary = {
+    let supabase;
+    try {
+      supabase = await createClient();
+    } catch (err) {
+      console.error("Failed to create Supabase client:", err);
+      return NextResponse.json({ 
+        error: "Database configuration error", 
+        details: err instanceof Error ? err.message : "Unknown error"
+      }, { status: 500 });
+    }
+
+    const importSummary = {
     uploadId: '',
     estatesProcessed: 0,
     standsCreated: 0,

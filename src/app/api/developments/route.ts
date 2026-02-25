@@ -11,7 +11,16 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const supabase = await createClient();
+    let supabase;
+    try {
+      supabase = await createClient();
+    } catch (err) {
+      console.error("Failed to create Supabase client:", err);
+      return NextResponse.json({ 
+        error: "Database configuration error", 
+        details: err instanceof Error ? err.message : "Unknown error"
+      }, { status: 500 });
+    }
 
     // Simple query first - just developments
     const { data: developments, error } = await supabase
@@ -111,7 +120,17 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const supabase = await createClient();
+    
+    let supabase;
+    try {
+      supabase = await createClient();
+    } catch (err) {
+      console.error("Failed to create Supabase client:", err);
+      return NextResponse.json({ 
+        error: "Database configuration error", 
+        details: err instanceof Error ? err.message : "Unknown error"
+      }, { status: 500 });
+    }
 
     // Insert development
     const { data: development, error: devError } = await supabase
