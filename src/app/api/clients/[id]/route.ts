@@ -64,13 +64,21 @@ export async function GET(
       .order("transaction_date", { ascending: false });
 
     const standsWithBalances = (stands || []).map((stand: any) => {
+      // Handle potential array returns
+      const development = Array.isArray(stand.development) 
+        ? stand.development[0] 
+        : stand.development;
+      const standInventory = Array.isArray(stand.stand_inventory) 
+        ? stand.stand_inventory[0] 
+        : stand.stand_inventory;
+      
       const standReceipts = receipts?.filter(r => r.stand_id === stand.id) || [];
       const totalPaid = standReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
       return {
         id: stand.id,
-        standNumber: stand.stand_inventory?.stand_number,
-        developmentName: stand.development?.name,
-        currency: stand.development?.currency,
+        standNumber: standInventory?.stand_number,
+        developmentName: development?.name,
+        currency: development?.currency,
         status: stand.status,
         agreedPrice: stand.agreed_price,
         totalPaid,

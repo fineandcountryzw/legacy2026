@@ -73,13 +73,24 @@ export async function GET(request: NextRequest) {
         const totalPaid = transactions?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0;
         const agreedPrice = stand.agreed_price || 0;
 
+        // Handle potential array returns from Supabase joins
+        const standInventory = Array.isArray(stand.stand_inventory) 
+          ? stand.stand_inventory[0] 
+          : stand.stand_inventory;
+        const development = Array.isArray(stand.development) 
+          ? stand.development[0] 
+          : stand.development;
+        const standType = Array.isArray(stand.stand_type) 
+          ? stand.stand_type[0] 
+          : stand.stand_type;
+
         return {
           id: stand.id,
-          standNumber: stand.stand_inventory?.stand_number,
-          developmentId: stand.development?.id,
-          developmentName: stand.development?.name,
-          currency: stand.development?.currency,
-          standTypeLabel: stand.stand_type?.label,
+          standNumber: standInventory?.stand_number,
+          developmentId: development?.id,
+          developmentName: development?.name,
+          currency: development?.currency,
+          standTypeLabel: standType?.label,
           status: stand.status,
           clientName: stand.client_name,
           agreedPrice,

@@ -55,12 +55,17 @@ export async function GET(
       `)
       .eq("upload_id", id);
 
+    // Handle potential array returns
+    const development = Array.isArray(upload.development) 
+      ? upload.development[0] 
+      : upload.development;
+
     const receiptWithDetails = {
       id: upload.id,
       receiptNumber: upload.file_name?.replace(/\.[^/.]+$/, ""),
       date: upload.created_at,
       status: upload.status,
-      development: upload.development,
+      development: development,
       rawData: upload.raw_data,
       transactions: transactions || [],
       totalAmount: transactions?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0,
