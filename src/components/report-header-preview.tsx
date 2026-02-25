@@ -10,13 +10,13 @@ interface ReportHeaderPreviewProps {
         secondary: string
         accent: string
     }
-    logoUrl?: string
+    logo?: string | null
 }
 
 export function ReportHeaderPreview({
     companyName,
     colors,
-    logoUrl,
+    logo,
 }: ReportHeaderPreviewProps) {
     return (
         <Card className="overflow-hidden border-2" style={{ borderColor: colors.primary }}>
@@ -29,7 +29,11 @@ export function ReportHeaderPreview({
                         className="flex h-12 w-12 items-center justify-center rounded bg-white text-xl font-bold"
                         style={{ color: colors.primary }}
                     >
-                        {logoUrl ? <img src={logoUrl} alt="Logo" className="h-8 w-8 object-contain" /> : "F&C"}
+                        {logo ? (
+                            <img src={logo} alt="Logo" className="h-8 w-8 object-contain" />
+                        ) : (
+                            <span className="text-lg font-bold">LOGO</span>
+                        )}
                     </div>
                     <div>
                         <h3 className="text-lg font-bold leading-none">{companyName}</h3>
