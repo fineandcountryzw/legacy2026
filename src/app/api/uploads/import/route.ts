@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getDb } from "@/lib/db";
-import { parseLedgerFile } from "@/lib/import/ledger-parser";
+import { parseLedgerFile, ParsedTransaction } from "@/lib/import/ledger-parser";
 
 // POST /api/uploads/import - Import ledger data to database
 export async function POST(request: NextRequest) {
@@ -10,11 +10,15 @@ export async function POST(request: NextRequest) {
     estatesProcessed: 0,
     standsCreated: 0,
     transactionsCreated: 0,
-    clientPaymentsTotal: 0,
+    customerPaymentsTotal: 0,
+    deductiblesTotal: 0,
+    commissionsTotal: 0,
     developerPaymentsTotal: 0,
     legalFeesTotal: 0,
-    fcFeesTotal: 0,
+    adminFeesTotal: 0,
+    aosFeesTotal: 0,
     realtorPaymentsTotal: 0,
+    warnings: [] as string[],
     errors: [] as string[]
   };
 
@@ -63,6 +67,11 @@ export async function POST(request: NextRequest) {
 
     importSummary.uploadId = upload.id;
 
+    // Add any parser warnings
+    if (result.metadata.warnings.length > 0) {
+      importSummary.warnings.push(...result.metadata.warnings);
+    }
+
     // 2. Process each estate and stand
     for (const estate of result.estates) {
       importSummary.estatesProcessed++;
@@ -93,8 +102,8 @@ export async function POST(request: NextRequest) {
               ) VALUES (
                 ${developmentId}, ${standInv.id}, 
                 ${stand.agentCode ? `${stand.agentCode}` : null}, 
-                ${stand.totalReceipts}, 
-                ${stand.totalReceipts > 0 ? 'Sold' : 'Available'}
+                ${stand.customerPayments.total}, 
+                ${stand.customerPayments.total > 0 ? 'Sold' : 'Available'}
               ) ON CONFLICT (development_id, stand_inventory_id) DO UPDATE 
               SET 
                 client_name = EXCLUDED.client_name,
@@ -107,9 +116,18 @@ export async function POST(request: NextRequest) {
 
           importSummary.standsCreated++;
 
-          // 3. Create payment transactions
-          for (const tx of stand.transactions) {
-            const idempotencyKey = `${upload.id}-${tx.sheetName}-${stand.standNumber}-${tx.rawRowIndex}`;
+          // 3. Create payment transactions - combine both sides
+          const allTransactions: ParsedTransaction[] = [
+            ...stand.customerPayments.transactions,
+            ...stand.deductibles.transactions
+          ];
+
+          for (const tx of allTransactions) {
+            const idempotencyKey = `${upload.id}-${tx.sheetName}-${stand.standNumber}-${tx.rowIndex}`;
+
+            // Map new categories to database categories
+            const dbCategory = mapCategoryToDb(tx.category);
+            const dbSide = tx.side === 'CUSTOMER_PAYMENT' ? 'RECEIPT' : 'PAYMENT';
 
             await sql`
               INSERT INTO payment_transactions (
@@ -121,9 +139,9 @@ export async function POST(request: NextRequest) {
                 ${devStandId}, ${standInv.id},
                 ${tx.date}, ${tx.amount}, ${tx.reference}, 
                 ${`[${tx.sheetName}] ${tx.description}`}, 
-                ${tx.category}, ${tx.side}, ${tx.sheetName},
+                ${dbCategory}, ${dbSide}, ${tx.sheetName},
                 ${devStandId ? 'Matched' : 'Unmatched'},
-                ${tx.rawRowIndex}, ${idempotencyKey}
+                ${tx.rowIndex}, ${idempotencyKey}
               ) ON CONFLICT (idempotency_key) DO UPDATE
               SET 
                 amount = EXCLUDED.amount,
@@ -133,17 +151,33 @@ export async function POST(request: NextRequest) {
 
             importSummary.transactionsCreated++;
 
-            // Track category totals
-            if (tx.category === 'CLIENT_DEPOSIT' || tx.category === 'CLIENT_INSTALLMENT') {
-              importSummary.clientPaymentsTotal += tx.amount;
-            } else if (tx.category === 'DEVELOPER_PAYMENT') {
-              importSummary.developerPaymentsTotal += tx.amount;
-            } else if (tx.category === 'LEGAL_FEE') {
-              importSummary.legalFeesTotal += tx.amount;
-            } else if (tx.category === 'FC_COMMISSION' || tx.category === 'FC_ADMIN_FEE') {
-              importSummary.fcFeesTotal += tx.amount;
-            } else if (tx.category === 'REALTOR_PAYMENT') {
-              importSummary.realtorPaymentsTotal += tx.amount;
+            // Track totals by side and category
+            if (tx.side === 'CUSTOMER_PAYMENT') {
+              importSummary.customerPaymentsTotal += tx.amount;
+            } else {
+              importSummary.deductiblesTotal += tx.amount;
+              
+              // Track deductible subcategories
+              switch (tx.category) {
+                case 'DEDUCTION_COMMISSION':
+                  importSummary.commissionsTotal += tx.amount;
+                  break;
+                case 'DEDUCTION_DEVELOPER':
+                  importSummary.developerPaymentsTotal += tx.amount;
+                  break;
+                case 'DEDUCTION_LEGAL_FEE':
+                  importSummary.legalFeesTotal += tx.amount;
+                  break;
+                case 'DEDUCTION_ADMIN_FEE':
+                  importSummary.adminFeesTotal += tx.amount;
+                  break;
+                case 'DEDUCTION_AOS':
+                  importSummary.aosFeesTotal += tx.amount;
+                  break;
+                case 'DEDUCTION_REALTOR':
+                  importSummary.realtorPaymentsTotal += tx.amount;
+                  break;
+              }
             }
           }
 
@@ -154,6 +188,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Helper function to map new categories to database categories
+    function mapCategoryToDb(category: string): string {
+      const mapping: Record<string, string> = {
+        'CUSTOMER_DEPOSIT': 'CLIENT_DEPOSIT',
+        'CUSTOMER_INSTALLMENT': 'CLIENT_INSTALLMENT',
+        'CUSTOMER_ADMIN_FEE': 'FC_ADMIN_FEE',
+        'CUSTOMER_LEGAL_FEE': 'LEGAL_FEE',
+        'DEDUCTION_COMMISSION': 'FC_COMMISSION',
+        'DEDUCTION_ADMIN_FEE': 'FC_ADMIN_FEE',
+        'DEDUCTION_AOS': 'AOS_FEE',
+        'DEDUCTION_DEVELOPER': 'DEVELOPER_PAYMENT',
+        'DEDUCTION_REALTOR': 'REALTOR_PAYMENT',
+        'DEDUCTION_LEGAL_FEE': 'LEGAL_FEE',
+        'UNKNOWN': 'UNKNOWN'
+      };
+      return mapping[category] || 'UNKNOWN';
+    }
+
     // 4. Mark upload as completed
     await sql`
       UPDATE uploads
@@ -162,16 +214,21 @@ export async function POST(request: NextRequest) {
     `;
 
     // Round numbers
-    importSummary.clientPaymentsTotal = Math.round(importSummary.clientPaymentsTotal * 100) / 100;
-    importSummary.developerPaymentsTotal = Math.round(importSummary.developerPaymentsTotal * 100) / 100;
-    importSummary.legalFeesTotal = Math.round(importSummary.legalFeesTotal * 100) / 100;
-    importSummary.fcFeesTotal = Math.round(importSummary.fcFeesTotal * 100) / 100;
-    importSummary.realtorPaymentsTotal = Math.round(importSummary.realtorPaymentsTotal * 100) / 100;
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    importSummary.customerPaymentsTotal = round2(importSummary.customerPaymentsTotal);
+    importSummary.deductiblesTotal = round2(importSummary.deductiblesTotal);
+    importSummary.commissionsTotal = round2(importSummary.commissionsTotal);
+    importSummary.developerPaymentsTotal = round2(importSummary.developerPaymentsTotal);
+    importSummary.legalFeesTotal = round2(importSummary.legalFeesTotal);
+    importSummary.adminFeesTotal = round2(importSummary.adminFeesTotal);
+    importSummary.aosFeesTotal = round2(importSummary.aosFeesTotal);
+    importSummary.realtorPaymentsTotal = round2(importSummary.realtorPaymentsTotal);
 
     const hasErrors = importSummary.errors.length > 0;
     return NextResponse.json({
       success: !hasErrors,
-      summary: importSummary
+      summary: importSummary,
+      grandTotals: result.grandTotals
     }, { status: hasErrors ? 207 : 200 });
 
   } catch (error) {
