@@ -1,4 +1,4 @@
-import { createClient as createServerClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 import { parseExcelFile, ParseResult, StandBlock } from "./excel-parser";
 
 export interface ImportOptions {
@@ -30,7 +30,7 @@ export async function processExcelUpload(
     errors: []
   };
 
-  const supabase = await createServerClient();
+  const sql = getDb();
 
   try {
     // 1. Parse the Excel file
@@ -42,24 +42,22 @@ export async function processExcelUpload(
     }
 
     // 2. Create upload record
-    const { data: upload, error: uploadError } = await supabase
-      .from("uploads")
-      .insert({
-        user_id: options.userId,
-        development_id: options.developmentId || null,
-        file_name: fileName,
-        file_path: `uploads/${options.userId}/${Date.now()}_${fileName}`,
-        file_size: fileBuffer.byteLength,
-        status: "Processing",
-        stands_detected: parseResult.stands.length,
-        transactions_detected: parseResult.stands.reduce((sum, s) => sum + s.payments.length, 0) + parseResult.unmatchedTransactions.length,
-        raw_data: parseResult
-      })
-      .select()
-      .single();
+    const uploadResults = await sql`
+      INSERT INTO uploads (
+        user_id, development_id, file_name, file_path, 
+        file_size, status, stands_detected, transactions_detected, raw_data
+      ) VALUES (
+        ${options.userId}, ${options.developmentId || null}, ${fileName}, 
+        ${`uploads/${options.userId}/${Date.now()}_${fileName}`}, ${fileBuffer.byteLength}, 
+        'Processing', ${parseResult.stands.length}, 
+        ${parseResult.stands.reduce((sum, s) => sum + s.payments.length, 0) + parseResult.unmatchedTransactions.length}, 
+        ${JSON.stringify(parseResult)}
+      ) RETURNING *
+    `;
 
-    if (uploadError || !upload) {
-      throw new Error(`Failed to create upload record: ${uploadError?.message}`);
+    const upload = uploadResults[0];
+    if (!upload) {
+      throw new Error("Failed to create upload record");
     }
 
     result.uploadId = upload.id;
@@ -67,8 +65,9 @@ export async function processExcelUpload(
     // 3. Process each stand block
     for (const standBlock of parseResult.stands) {
       try {
-        await processStandBlock(supabase, standBlock, upload.id, options);
+        const txCount = await processStandBlock(sql, standBlock, upload.id, options);
         result.standsProcessed++;
+        result.transactionsCreated += txCount;
       } catch (err) {
         result.errors.push(`Error processing stand ${standBlock.standNumber}: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
@@ -77,40 +76,36 @@ export async function processExcelUpload(
     // 4. Process unmatched transactions
     for (const payment of parseResult.unmatchedTransactions) {
       try {
-        const idempotencyKey = `${upload.id}-unmatched-${payment.rowIndex}`;
-        
-        const { error } = await supabase
-          .from("payment_transactions")
-          .insert({
-            user_id: options.userId,
-            upload_id: upload.id,
-            development_id: options.developmentId,
-            stand_id: null,
-            transaction_date: payment.date?.toISOString().split('T')[0],
-            amount: payment.amount,
-            reference: payment.reference,
-            description: payment.description,
-            status: "Unmatched",
-            source_row_index: payment.rowIndex,
-            idempotency_key: idempotencyKey
-          });
+        const sheetNameClean = payment.sheetName.replace(/[^a-zA-Z0-9]/g, '_');
+        const idempotencyKey = `${upload.id}-${sheetNameClean}-unmatched-${payment.rowIndex}`;
 
-        if (!error) {
-          result.transactionsCreated++;
-        }
+        await sql`
+          INSERT INTO payment_transactions (
+            user_id, upload_id, development_id, stand_id,
+            transaction_date, amount, reference, description, status,
+            source_row_index, idempotency_key, sheet_name
+          ) VALUES (
+            ${options.userId}, ${upload.id}, ${options.developmentId || null}, null,
+            ${payment.date?.toISOString().split('T')[0]}, ${payment.amount}, 
+            ${payment.reference}, ${payment.description}, 'Unmatched',
+            ${payment.rowIndex}, ${idempotencyKey}, ${payment.sheetName}
+          ) ON CONFLICT (idempotency_key) DO NOTHING
+        `;
+
+        result.transactionsCreated++;
       } catch (err) {
         result.errors.push(`Error processing unmatched transaction: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
     }
 
     // 5. Mark upload as completed
-    await supabase
-      .from("uploads")
-      .update({
-        status: result.errors.length > 0 ? "Failed" : "Completed",
-        completed_at: new Date().toISOString()
-      })
-      .eq("id", upload.id);
+    await sql`
+      UPDATE uploads
+      SET 
+        status = ${result.errors.length > 0 ? 'Failed' : 'Completed'},
+        completed_at = NOW()
+      WHERE id = ${upload.id}
+    `;
 
   } catch (error) {
     result.errors.push(`Import failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -123,119 +118,106 @@ export async function processExcelUpload(
  * Processes a single stand block - upserts stand and creates transactions
  */
 async function processStandBlock(
-  supabase: any,
+  sql: any,
   standBlock: StandBlock,
   uploadId: string,
   options: ImportOptions
-) {
-  // 1. Upsert stand inventory (canonical stand)
-  const { data: standInv, error: standInvError } = await supabase
-    .from("stand_inventory")
-    .upsert({
-      canonical_stand_key: standBlock.standKey,
-      stand_number: standBlock.standNumber
-    }, {
-      onConflict: "canonical_stand_key"
-    })
-    .select()
-    .single();
+): Promise<number> {
+  let txCreated = 0;
 
-  if (standInvError) {
-    throw new Error(`Failed to upsert stand inventory: ${standInvError.message}`);
-  }
+  // 1. Upsert stand inventory (canonical stand)
+  const standInvResults = await sql`
+    INSERT INTO stand_inventory (canonical_stand_key, stand_number)
+    VALUES (${standBlock.standKey}, ${standBlock.standNumber})
+    ON CONFLICT (canonical_stand_key) DO UPDATE 
+    SET stand_number = EXCLUDED.stand_number
+    RETURNING id
+  `;
+
+  const standInv = standInvResults[0];
 
   // 2. If developmentId provided, link stand to development
   let developmentStandId: string | null = null;
-  
-  if (options.developmentId) {
-    // Check if development stand already exists
-    const { data: existingDevStand } = await supabase
-      .from("development_stands")
-      .select("id")
-      .eq("development_id", options.developmentId)
-      .eq("stand_inventory_id", standInv.id)
-      .maybeSingle();
 
-    if (existingDevStand) {
-      developmentStandId = existingDevStand.id;
-      
-      // Update client name if provided
+  if (options.developmentId) {
+    const existingDevStands = await sql`
+      SELECT id FROM development_stands 
+      WHERE development_id = ${options.developmentId} AND stand_inventory_id = ${standInv.id}
+    `;
+
+    if (existingDevStands.length > 0) {
+      developmentStandId = existingDevStands[0].id;
+
       if (standBlock.clientName) {
-        await supabase
-          .from("development_stands")
-          .update({ client_name: standBlock.clientName })
-          .eq("id", developmentStandId);
+        await sql`
+          UPDATE development_stands 
+          SET client_name = ${standBlock.clientName} 
+          WHERE id = ${developmentStandId}
+        `;
       }
     } else {
-      // Create new development stand
-      const { data: newDevStand, error: devStandError } = await supabase
-        .from("development_stands")
-        .insert({
-          development_id: options.developmentId,
-          stand_inventory_id: standInv.id,
-          client_name: standBlock.clientName,
-          status: "Sold"
-        })
-        .select()
-        .single();
-
-      if (devStandError) {
-        throw new Error(`Failed to create development stand: ${devStandError.message}`);
-      }
-      
-      developmentStandId = newDevStand.id;
+      const newDevStandResults = await sql`
+        INSERT INTO development_stands (development_id, stand_inventory_id, client_name, status)
+        VALUES (${options.developmentId}, ${standInv.id}, ${standBlock.clientName}, 'Sold')
+        RETURNING id
+      `;
+      developmentStandId = newDevStandResults[0].id;
     }
   }
 
   // 3. Create payment transactions
   for (const payment of standBlock.payments) {
-    const idempotencyKey = `${uploadId}-${standBlock.standKey}-${payment.rowIndex}`;
-    
-    const { error: txnError } = await supabase
-      .from("payment_transactions")
-      .insert({
-        user_id: options.userId,
-        upload_id: uploadId,
-        development_id: options.developmentId,
-        stand_id: developmentStandId,
-        transaction_date: payment.date?.toISOString().split('T')[0],
-        amount: payment.amount,
-        reference: payment.reference,
-        description: payment.description,
-        status: developmentStandId ? "Matched" : "Unmatched",
-        source_row_index: payment.rowIndex,
-        idempotency_key: idempotencyKey
-      }, {
-        onConflict: "idempotency_key"
-      });
+    // Improved idempotency key includes sheetName to prevent collisions between sheets
+    const sheetNameClean = payment.sheetName.replace(/[^a-zA-Z0-9]/g, '_');
+    const idempotencyKey = `${uploadId}-${sheetNameClean}-${standBlock.standKey}-${payment.rowIndex}`;
 
-    if (txnError) {
-      console.warn(`Failed to insert transaction: ${txnError.message}`);
-    }
+    await sql`
+      INSERT INTO payment_transactions (
+        user_id, upload_id, development_id, stand_id, stand_inventory_id,
+        transaction_date, amount, reference, description, status,
+        source_row_index, idempotency_key, sheet_name, category, side
+      ) VALUES (
+        ${options.userId}, ${uploadId}, ${options.developmentId || null}, 
+        ${developmentStandId}, ${standInv.id},
+        ${payment.date?.toISOString().split('T')[0]}, ${payment.amount}, 
+        ${payment.reference}, ${payment.description}, 
+        ${developmentStandId ? 'Matched' : 'Unmatched'},
+        ${payment.rowIndex}, ${idempotencyKey}, ${payment.sheetName},
+        ${standBlock.category}, ${standBlock.side}
+      ) ON CONFLICT (idempotency_key) DO UPDATE
+      SET 
+        amount = EXCLUDED.amount,
+        reference = EXCLUDED.reference,
+        description = EXCLUDED.description
+    `;
+    txCreated++;
   }
+
+  return txCreated;
 }
 
 /**
  * Reconciles transactions with stands based on reference matching
  */
 export async function reconcileTransactions(userId: string, developmentId?: string) {
-  const supabase = await createServerClient();
+  const sql = getDb();
 
   // Get unmatched transactions
-  let query = supabase
-    .from("payment_transactions")
-    .select("*, uploads!inner(file_name)")
-    .eq("user_id", userId)
-    .eq("status", "Unmatched");
-
+  let unmatchedTxns;
   if (developmentId) {
-    query = query.eq("development_id", developmentId);
-  }
-
-  const { data: unmatchedTxns, error } = await query;
-
-  if (error || !unmatchedTxns) {
-    throw new Error(`Failed to fetch unmatched transactions: ${error?.message}`);
+    unmatchedTxns = await sql`
+      SELECT t.*, u.file_name 
+      FROM payment_transactions t
+      JOIN uploads u ON t.upload_id = u.id
+      WHERE t.user_id = ${userId} AND t.status = 'Unmatched' AND t.development_id = ${developmentId}
+    `;
+  } else {
+    unmatchedTxns = await sql`
+      SELECT t.*, u.file_name 
+      FROM payment_transactions t
+      JOIN uploads u ON t.upload_id = u.id
+      WHERE t.user_id = ${userId} AND t.status = 'Unmatched'
+    `;
   }
 
   const reconciled: string[] = [];
@@ -243,28 +225,25 @@ export async function reconcileTransactions(userId: string, developmentId?: stri
   for (const txn of unmatchedTxns) {
     // Try to match by reference pattern (e.g., "DEP-GVE-101" -> stand 101)
     const refMatch = txn.reference?.match(/(\d{3,4})/);
-    
+
     if (refMatch && txn.development_id) {
       const standNumber = refMatch[1];
-      
+
       // Find development stand
-      const { data: devStand } = await supabase
-        .from("development_stands")
-        .select("id, stand_inventory!inner(stand_number)")
-        .eq("development_id", txn.development_id)
-        .eq("stand_inventory.stand_number", standNumber)
-        .maybeSingle();
+      const devStands = await sql`
+        SELECT ds.id 
+        FROM development_stands ds
+        JOIN stand_inventory si ON ds.stand_inventory_id = si.id
+        WHERE ds.development_id = ${txn.development_id} AND si.stand_number = ${standNumber}
+      `;
 
-      if (devStand) {
+      if (devStands.length > 0) {
         // Update transaction as matched
-        await supabase
-          .from("payment_transactions")
-          .update({
-            stand_id: devStand.id,
-            status: "Matched"
-          })
-          .eq("id", txn.id);
-
+        await sql`
+          UPDATE payment_transactions
+          SET stand_id = ${devStands[0].id}, status = 'Matched'
+          WHERE id = ${txn.id}
+        `;
         reconciled.push(txn.id);
       }
     }

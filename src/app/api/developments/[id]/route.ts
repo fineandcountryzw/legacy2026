@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // PATCH /api/developments/[id] - Update development
 export async function PATCH(
@@ -9,45 +9,39 @@ export async function PATCH(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
     const body = await request.json();
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { data, error } = await supabase
-      .from("developments")
-      .update({
-        developer_name: body.developerName,
-        developer_contacts: body.developerContacts,
-        email: body.email,
-        phone: body.phone,
-        address: body.address,
-        website: body.website,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", id)
-      .eq("user_id", userId)
-      .select()
-      .single();
+    const results = await sql`
+      UPDATE developments
+      SET 
+        developer_name = ${body.developerName},
+        developer_contacts = ${body.developerContacts},
+        email = ${body.email},
+        phone = ${body.phone},
+        address = ${body.address},
+        website = ${body.website},
+        updated_at = NOW()
+      WHERE id = ${id} AND user_id = ${userId}
+      RETURNING *
+    `;
 
-    if (error) {
-      console.error("Error updating development:", error);
-      return NextResponse.json({ 
-        error: "Failed to update development", 
-        details: error.message 
-      }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "Development not found" }, { status: 404 });
     }
 
-    return NextResponse.json(data);
+    return NextResponse.json(results[0]);
   } catch (err) {
-    console.error("Unexpected error:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    console.error("Unexpected error in PATCH /api/developments/[id]:", err);
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -59,29 +53,28 @@ export async function GET(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { data, error } = await supabase
-      .from("developments")
-      .select("*")
-      .eq("id", id)
-      .eq("user_id", userId)
-      .single();
+    const results = await sql`
+      SELECT * FROM developments 
+      WHERE id = ${id} AND user_id = ${userId}
+    `;
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "Development not found" }, { status: 404 });
     }
 
-    return NextResponse.json(data);
+    return NextResponse.json(results[0]);
   } catch (err) {
-    return NextResponse.json({ 
-      error: err instanceof Error ? err.message : "Unknown error" 
+    console.error("Unexpected error in GET /api/developments/[id]:", err);
+    return NextResponse.json({
+      error: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }

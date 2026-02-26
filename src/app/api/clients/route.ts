@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // GET /api/clients - Get all clients for the current user
 export async function GET(request: NextRequest) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -14,69 +14,51 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search");
 
-    const supabase = await createClient();
+    const sql = getDb();
 
-    let query = supabase
-      .from("clients")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+    // Optimize with a single query using subqueries for aggregates
+    // This avoids N+1 query problem and is much faster
+    const clients = await sql`
+      SELECT 
+        c.*,
+        COALESCE(s.stands_count, 0) as stands_count,
+        COALESCE(s.total_agreed, 0) as total_agreed,
+        COALESCE(s.total_paid, 0) as total_paid
+      FROM clients c
+      LEFT JOIN (
+        SELECT 
+          ds.client_id,
+          COUNT(ds.id) as stands_count,
+          SUM(ds.agreed_price) as total_agreed,
+          SUM(COALESCE(tp.total_paid, 0)) as total_paid
+        FROM development_stands ds
+        LEFT JOIN (
+          SELECT stand_id, SUM(amount) as total_paid
+          FROM payment_transactions
+          GROUP BY stand_id
+        ) tp ON ds.id = tp.stand_id
+        GROUP BY ds.client_id
+      ) s ON c.id = s.client_id
+      WHERE c.user_id = ${userId}
+      ${search ? sql`AND (c.name ILIKE ${'%' + search + '%'} OR c.phone ILIKE ${'%' + search + '%'} OR c.id_number ILIKE ${'%' + search + '%'})` : sql``}
+      ORDER BY c.created_at DESC
+    `;
 
-    if (search) {
-      query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%,id_number.ilike.%${search}%`);
-    }
+    const transformedClients = clients.map((client: any) => ({
+      ...client,
+      standsCount: parseInt(client.stands_count || 0),
+      totalPaid: parseFloat(client.total_paid || 0),
+      totalAgreed: parseFloat(client.total_agreed || 0),
+      balance: parseFloat(client.total_agreed || 0) - parseFloat(client.total_paid || 0),
+    }));
 
-    const { data: clients, error } = await query;
-
-    if (error) {
-      console.error("Error fetching clients:", error);
-      return NextResponse.json({ 
-        error: "Database error", 
-        details: error.message 
-      }, { status: 500 });
-    }
-
-    // Get stands count and totals for each client
-    const clientsWithDetails = await Promise.all(
-      (clients || []).map(async (client: any) => {
-        const { data: stands } = await supabase
-          .from("development_stands")
-          .select("id, agreed_price")
-          .eq("client_id", client.id);
-
-        const standsCount = stands?.length || 0;
-        
-        // Get total paid across all client stands
-        const standIds = stands?.map(s => s.id) || [];
-        let totalPaid = 0;
-        
-        if (standIds.length > 0) {
-          const { data: transactions } = await supabase
-            .from("payment_transactions")
-            .select("amount")
-            .in("stand_id", standIds);
-          
-          totalPaid = transactions?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0;
-        }
-
-        const totalAgreed = stands?.reduce((sum, s) => sum + (s.agreed_price || 0), 0) || 0;
-
-        return {
-          ...client,
-          standsCount,
-          totalPaid,
-          balance: totalAgreed - totalPaid,
-        };
-      })
-    );
-
-    return NextResponse.json({ clients: clientsWithDetails });
+    return NextResponse.json({ clients: transformedClients });
 
   } catch (err) {
     console.error("Unexpected error in GET /api/clients:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -85,41 +67,30 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { data: client, error } = await supabase
-      .from("clients")
-      .insert({
-        user_id: userId,
-        name: body.name,
-        email: body.email,
-        phone: body.phone,
-        id_number: body.idNumber,
-      })
-      .select()
-      .single();
+    const results = await sql`
+      INSERT INTO clients (
+        user_id, name, email, phone, id_number
+      ) VALUES (
+        ${userId}, ${body.name}, ${body.email || null}, 
+        ${body.phone || null}, ${body.idNumber || null}
+      ) RETURNING *
+    `;
 
-    if (error) {
-      console.error("Error creating client:", error);
-      return NextResponse.json({ 
-        error: "Failed to create client", 
-        details: error.message 
-      }, { status: 500 });
-    }
-
-    return NextResponse.json(client, { status: 201 });
+    return NextResponse.json(results[0], { status: 201 });
 
   } catch (err) {
     console.error("Unexpected error in POST /api/clients:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }

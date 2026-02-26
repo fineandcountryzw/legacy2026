@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 import { parseLedgerFile } from "@/lib/import/ledger-parser";
 
 // POST /api/uploads/import - Import ledger data to database
@@ -25,18 +25,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    let supabase;
-    try {
-      supabase = await createClient();
-    } catch (err) {
-      console.error("Failed to create Supabase client:", err);
-      return NextResponse.json({
-        error: "Database configuration error",
-        details: err instanceof Error ? err.message : "Unknown error"
-      }, { status: 500 });
-    }
-
     const { fileData, filename, developmentId } = await request.json();
+    const sql = getDb();
 
     // Parse the file data (base64 to ArrayBuffer)
     const buffer = Buffer.from(fileData, 'base64');
@@ -53,24 +43,22 @@ export async function POST(request: NextRequest) {
     }
 
     // 1. Create upload record
-    const { data: upload, error: uploadError } = await supabase
-      .from("uploads")
-      .insert({
-        user_id: userId,
-        development_id: developmentId || null,
-        file_name: filename,
-        file_path: `uploads/${userId}/${Date.now()}_${filename}`,
-        file_size: buffer.length,
-        status: "Processing",
-        stands_detected: result.metadata.totalStands,
-        transactions_detected: result.metadata.totalTransactions,
-        raw_data: { estates: result.estates.map(e => e.sheetName) }
-      })
-      .select()
-      .single();
+    const uploadResults = await sql`
+      INSERT INTO uploads (
+        user_id, development_id, file_name, file_path, 
+        file_size, status, stands_detected, transactions_detected, raw_data
+      ) VALUES (
+        ${userId}, ${developmentId || null}, ${filename}, 
+        ${`uploads/${userId}/${Date.now()}_${filename}`}, ${buffer.length}, 
+        'Processing', ${result.metadata.totalStands}, 
+        ${result.metadata.totalTransactions}, 
+        ${JSON.stringify({ estates: result.estates.map(e => e.sheetName) })}
+      ) RETURNING *
+    `;
 
-    if (uploadError || !upload) {
-      throw new Error(`Failed to create upload record: ${uploadError?.message}`);
+    const upload = uploadResults[0];
+    if (!upload) {
+      throw new Error("Failed to create upload record");
     }
 
     importSummary.uploadId = upload.id;
@@ -81,122 +69,97 @@ export async function POST(request: NextRequest) {
 
       for (const stand of estate.stands) {
         try {
-          // Create or get stand inventory (always - even without a development)
+          // Create or get stand inventory
           const standKey = developmentId
             ? `${developmentId}:${stand.standNumber}`
             : `${estate.sheetName}:${stand.standNumber}`;
 
-          const { data: standInv, error: standError } = await supabase
-            .from("stand_inventory")
-            .upsert({
-              canonical_stand_key: standKey,
-              stand_number: stand.standNumber
-            }, { onConflict: "canonical_stand_key" })
-            .select()
-            .single();
+          const standInvResults = await sql`
+            INSERT INTO stand_inventory (canonical_stand_key, stand_number)
+            VALUES (${standKey}, ${stand.standNumber})
+            ON CONFLICT (canonical_stand_key) DO UPDATE 
+            SET stand_number = EXCLUDED.stand_number
+            RETURNING id
+          `;
 
-          if (standError) {
-            console.error(`Stand inventory error for ${stand.standNumber}:`, standError);
-            importSummary.errors.push(`Stand ${stand.standNumber}: ${standError.message}`);
-            continue;
-          }
-
-          if (!standInv) {
-            console.error(`No stand inventory returned for ${stand.standNumber}`);
-            importSummary.errors.push(`Stand ${stand.standNumber}: Failed to create stand inventory`);
-            continue;
-          }
+          const standInv = standInvResults[0];
 
           // Create development_stand link if development selected
           let devStandId: string | null = null;
           if (developmentId) {
-            const { data: devStand, error: devStandError } = await supabase
-              .from("development_stands")
-              .upsert({
-                development_id: developmentId,
-                stand_inventory_id: standInv.id,
-                client_name: stand.agentCode ? `${stand.agentCode}` : null,
-                agreed_price: stand.totalReceipts,
-                status: stand.totalReceipts > 0 ? 'Sold' : 'Available'
-              }, { onConflict: "development_id,stand_inventory_id" })
-              .select()
-              .single();
-
-            if (!devStandError && devStand) {
-              devStandId = devStand.id;
-            }
+            const devStandResults = await sql`
+              INSERT INTO development_stands (
+                development_id, stand_inventory_id, client_name, agreed_price, status
+              ) VALUES (
+                ${developmentId}, ${standInv.id}, 
+                ${stand.agentCode ? `${stand.agentCode}` : null}, 
+                ${stand.totalReceipts}, 
+                ${stand.totalReceipts > 0 ? 'Sold' : 'Available'}
+              ) ON CONFLICT (development_id, stand_inventory_id) DO UPDATE 
+              SET 
+                client_name = EXCLUDED.client_name,
+                agreed_price = EXCLUDED.agreed_price,
+                status = EXCLUDED.status
+              RETURNING id
+            `;
+            devStandId = devStandResults[0].id;
           }
 
           importSummary.standsCreated++;
 
-          // 3. Create payment transactions for ALL categories
-          console.log(`[Import] Inserting ${stand.transactions.length} transactions for stand ${stand.standNumber}`);
-
+          // 3. Create payment transactions
           for (const tx of stand.transactions) {
-            // Idempotency key includes sheetName to avoid cross-sheet collisions
             const idempotencyKey = `${upload.id}-${tx.sheetName}-${stand.standNumber}-${tx.rawRowIndex}`;
 
-            console.log(`[Import] TX: [${tx.side}] ${tx.category} - ${tx.description?.substring(0, 30)}... $${tx.amount}`);
+            await sql`
+              INSERT INTO payment_transactions (
+                user_id, upload_id, development_id, stand_id, stand_inventory_id,
+                transaction_date, amount, reference, description, category, side,
+                sheet_name, status, source_row_index, idempotency_key
+              ) VALUES (
+                ${userId}, ${upload.id}, ${developmentId || null}, 
+                ${devStandId}, ${standInv.id},
+                ${tx.date}, ${tx.amount}, ${tx.reference}, 
+                ${`[${tx.sheetName}] ${tx.description}`}, 
+                ${tx.category}, ${tx.side}, ${tx.sheetName},
+                ${devStandId ? 'Matched' : 'Unmatched'},
+                ${tx.rawRowIndex}, ${idempotencyKey}
+              ) ON CONFLICT (idempotency_key) DO UPDATE
+              SET 
+                amount = EXCLUDED.amount,
+                reference = EXCLUDED.reference,
+                description = EXCLUDED.description
+            `;
 
-            const { error: txError } = await supabase
-              .from("payment_transactions")
-              .upsert({
-                user_id: userId,
-                upload_id: upload.id,
-                // development_id is now nullable — only set when development is selected
-                development_id: developmentId || null,
-                // stand_id = development_stands.id (only when development is linked)
-                stand_id: devStandId,
-                // stand_inventory_id = direct link for standalone imports
-                stand_inventory_id: standInv.id,
-                transaction_date: tx.date,
-                amount: tx.amount,
-                reference: tx.reference,
-                description: `[${tx.sheetName}] ${tx.description}`,
-                category: tx.category,
-                side: tx.side,
-                sheet_name: tx.sheetName,
-                status: devStandId ? "Matched" : "Unmatched",
-                source_row_index: tx.rawRowIndex,
-                idempotency_key: idempotencyKey
-              }, { onConflict: "idempotency_key" })
-              .select('id');
+            importSummary.transactionsCreated++;
 
-            if (txError) {
-              console.error(`[Import] TX INSERT ERROR:`, txError);
-              importSummary.errors.push(`TX ${tx.rawRowIndex}: ${txError.message}`);
-            } else {
-              importSummary.transactionsCreated++;
-
-              // Track category totals
-              if (tx.category === 'CLIENT_DEPOSIT' || tx.category === 'CLIENT_INSTALLMENT') {
-                importSummary.clientPaymentsTotal += tx.amount;
-              } else if (tx.category === 'DEVELOPER_PAYMENT') {
-                importSummary.developerPaymentsTotal += tx.amount;
-              } else if (tx.category === 'LEGAL_FEE') {
-                importSummary.legalFeesTotal += tx.amount;
-              } else if (tx.category === 'FC_COMMISSION' || tx.category === 'FC_ADMIN_FEE') {
-                importSummary.fcFeesTotal += tx.amount;
-              } else if (tx.category === 'REALTOR_PAYMENT') {
-                importSummary.realtorPaymentsTotal += tx.amount;
-              }
+            // Track category totals
+            if (tx.category === 'CLIENT_DEPOSIT' || tx.category === 'CLIENT_INSTALLMENT') {
+              importSummary.clientPaymentsTotal += tx.amount;
+            } else if (tx.category === 'DEVELOPER_PAYMENT') {
+              importSummary.developerPaymentsTotal += tx.amount;
+            } else if (tx.category === 'LEGAL_FEE') {
+              importSummary.legalFeesTotal += tx.amount;
+            } else if (tx.category === 'FC_COMMISSION' || tx.category === 'FC_ADMIN_FEE') {
+              importSummary.fcFeesTotal += tx.amount;
+            } else if (tx.category === 'REALTOR_PAYMENT') {
+              importSummary.realtorPaymentsTotal += tx.amount;
             }
           }
 
-        } catch (standError) {
-          importSummary.errors.push(`Stand ${stand.standNumber}: ${standError instanceof Error ? standError.message : 'Unknown error'}`);
+        } catch (standErr) {
+          console.error(`Stand processing error for ${stand.standNumber}:`, standErr);
+          importSummary.errors.push(`Stand ${stand.standNumber}: ${standErr instanceof Error ? standErr.message : 'Unknown error'}`);
         }
       }
     }
 
     // 4. Mark upload as completed
-    await supabase
-      .from("uploads")
-      .update({
-        status: "Completed",
-        completed_at: new Date().toISOString()
-      })
-      .eq("id", upload.id);
+    await sql`
+      UPDATE uploads
+      SET status = 'Completed', completed_at = NOW()
+      WHERE id = ${upload.id}
+    `;
 
     // Round numbers
     importSummary.clientPaymentsTotal = Math.round(importSummary.clientPaymentsTotal * 100) / 100;
@@ -204,8 +167,6 @@ export async function POST(request: NextRequest) {
     importSummary.legalFeesTotal = Math.round(importSummary.legalFeesTotal * 100) / 100;
     importSummary.fcFeesTotal = Math.round(importSummary.fcFeesTotal * 100) / 100;
     importSummary.realtorPaymentsTotal = Math.round(importSummary.realtorPaymentsTotal * 100) / 100;
-
-    console.log(`[Import] COMPLETE: ${importSummary.transactionsCreated} transactions, ${importSummary.errors.length} errors`);
 
     const hasErrors = importSummary.errors.length > 0;
     return NextResponse.json({

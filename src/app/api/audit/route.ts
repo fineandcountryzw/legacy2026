@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // GET /api/audit - Get audit log events
 export async function GET(request: NextRequest) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -18,55 +18,31 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    const supabase = await createClient();
+    const sql = getDb();
 
-    // Query audit_events table (create this table in your database)
-    let query = supabase
-      .from("audit_events")
-      .select("*")
-      .order("timestamp", { ascending: false });
-
-    if (actor) {
-      query = query.ilike("actor", `%${actor}%`);
-    }
-
-    if (action) {
-      query = query.eq("action", action);
-    }
-
-    if (entityType) {
-      query = query.eq("entity_type", entityType);
-    }
-
-    if (startDate) {
-      query = query.gte("timestamp", startDate);
-    }
-
-    if (endDate) {
-      query = query.lte("timestamp", endDate);
-    }
-
-    const { data: events, error } = await query;
-
-    if (error) {
-      // If table doesn't exist, return empty array
-      if (error.code === "42P01") {
-        return NextResponse.json({ events: [] });
-      }
-      console.error("Error fetching audit events:", error);
-      return NextResponse.json({ 
-        error: "Database error", 
-        details: error.message 
-      }, { status: 500 });
-    }
+    // Query audit_events table
+    const events = await sql`
+      SELECT * FROM audit_events
+      WHERE 1=1
+      ${actor ? sql`AND (actor ILIKE ${'%' + actor + '%'} OR actor_name ILIKE ${'%' + actor + '%'})` : sql``}
+      ${action ? sql`AND action = ${action}` : sql``}
+      ${entityType ? sql`AND entity_type = ${entityType}` : sql``}
+      ${startDate ? sql`AND timestamp >= ${startDate}` : sql``}
+      ${endDate ? sql`AND timestamp <= ${endDate}` : sql``}
+      ORDER BY timestamp DESC
+    `;
 
     return NextResponse.json({ events: events || [] });
 
   } catch (err) {
+    // If table doesn't exist, return empty array for now (graceful degradataion)
+    if (err instanceof Error && err.message.includes('relation "audit_events" does not exist')) {
+      return NextResponse.json({ events: [] });
+    }
     console.error("Unexpected error in GET /api/audit:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -75,51 +51,39 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
-    const supabase = await createClient();
-    
-    const { data: auditEvent, error } = await supabase
-      .from("audit_events")
-      .insert({
-        actor: userId,
-        actor_name: body.actorName || "Unknown",
-        action: body.action,
-        entity_type: body.entityType,
-        entity_id: body.entityId,
-        summary: body.summary,
-        metadata: body.metadata || {},
-      })
-      .select()
-      .single();
+    const sql = getDb();
 
-    if (error) {
-      // If table doesn't exist, just return success (silently fail)
-      if (error.code === "42P01") {
-        return NextResponse.json({ 
-          id: `audit_${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          ...body 
-        }, { status: 201 });
-      }
-      console.error("Error creating audit event:", error);
-      return NextResponse.json({ 
-        error: "Failed to create audit event", 
-        details: error.message 
-      }, { status: 500 });
-    }
+    const results = await sql`
+      INSERT INTO audit_events (
+        actor, actor_name, action, entity_type, entity_id, summary, metadata
+      ) VALUES (
+        ${userId}, ${body.actorName || "Unknown"}, ${body.action}, 
+        ${body.entityType}, ${body.entityId || null}, ${body.summary}, 
+        ${JSON.stringify(body.metadata || {})}
+      ) RETURNING *
+    `;
 
-    return NextResponse.json(auditEvent, { status: 201 });
+    return NextResponse.json(results[0], { status: 201 });
 
   } catch (err) {
+    // Graceful failure if table missing
+    if (err instanceof Error && err.message.includes('relation "audit_events" does not exist')) {
+      return NextResponse.json({
+        id: `audit_temp_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        ...await request.json()
+      }, { status: 201 });
+    }
     console.error("Unexpected error in POST /api/audit:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }

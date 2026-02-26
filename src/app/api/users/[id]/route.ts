@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // PUT /api/users/[id] - Update user role or status
 export async function PUT(
@@ -9,22 +9,22 @@ export async function PUT(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
     const body = await request.json();
-    const supabase = await createClient();
+    const sql = getDb();
 
     // Validate role if provided
     if (body.role) {
       const validRoles = ["admin", "finance", "agent", "auditor"];
       if (!validRoles.includes(body.role)) {
-        return NextResponse.json({ 
-          error: "Invalid role", 
-          details: `Role must be one of: ${validRoles.join(", ")}` 
+        return NextResponse.json({
+          error: "Invalid role",
+          details: `Role must be one of: ${validRoles.join(", ")}`
         }, { status: 400 });
       }
     }
@@ -33,60 +33,44 @@ export async function PUT(
     if (body.status) {
       const validStatuses = ["active", "inactive", "pending"];
       if (!validStatuses.includes(body.status)) {
-        return NextResponse.json({ 
-          error: "Invalid status", 
-          details: `Status must be one of: ${validStatuses.join(", ")}` 
+        return NextResponse.json({
+          error: "Invalid status",
+          details: `Status must be one of: ${validStatuses.join(", ")}`
         }, { status: 400 });
       }
     }
 
     // Prevent self-deactivation
     if (id === userId && body.status === "inactive") {
-      return NextResponse.json({ 
-        error: "Cannot deactivate yourself", 
-        details: "You cannot deactivate your own account" 
+      return NextResponse.json({
+        error: "Cannot deactivate yourself",
+        details: "You cannot deactivate your own account"
       }, { status: 400 });
     }
 
-    const { data: updatedUser, error } = await supabase
-      .from("org_users")
-      .update({
-        role: body.role,
-        status: body.status,
-        first_name: body.firstName,
-        last_name: body.lastName,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .select()
-      .single();
+    const results = await sql`
+      UPDATE org_users
+      SET 
+        role = ${body.role || null},
+        status = ${body.status || null},
+        first_name = ${body.firstName || ""},
+        last_name = ${body.lastName || ""},
+        updated_at = NOW()
+      WHERE id = ${id}
+      RETURNING *
+    `;
 
-    if (error) {
-      if (error.code === "42P01") {
-        return NextResponse.json({ 
-          error: "Users table not found", 
-          details: "Please run database migrations" 
-        }, { status: 500 });
-      }
-      if (error.code === "PGRST116") {
-        return NextResponse.json({ 
-          error: "User not found" 
-        }, { status: 404 });
-      }
-      console.error("Error updating user:", error);
-      return NextResponse.json({ 
-        error: "Failed to update user", 
-        details: error.message 
-      }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    return NextResponse.json(updatedUser);
+    return NextResponse.json(results[0]);
 
   } catch (err) {
     console.error("Unexpected error in PUT /api/users/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -98,7 +82,7 @@ export async function DELETE(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -107,40 +91,27 @@ export async function DELETE(
 
     // Prevent self-deletion
     if (id === userId) {
-      return NextResponse.json({ 
-        error: "Cannot delete yourself", 
-        details: "You cannot remove yourself from the organization" 
+      return NextResponse.json({
+        error: "Cannot delete yourself",
+        details: "You cannot remove yourself from the organization"
       }, { status: 400 });
     }
 
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { error } = await supabase
-      .from("org_users")
-      .delete()
-      .eq("id", id);
+    const results = await sql`DELETE FROM org_users WHERE id = ${id} RETURNING id`;
 
-    if (error) {
-      if (error.code === "42P01") {
-        return NextResponse.json({ 
-          error: "Users table not found", 
-          details: "Please run database migrations" 
-        }, { status: 500 });
-      }
-      console.error("Error deleting user:", error);
-      return NextResponse.json({ 
-        error: "Failed to delete user", 
-        details: error.message 
-      }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "User not found or already deleted" }, { status: 404 });
     }
 
     return NextResponse.json({ success: true });
 
   } catch (err) {
     console.error("Unexpected error in DELETE /api/users/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }

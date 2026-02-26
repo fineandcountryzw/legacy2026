@@ -114,6 +114,14 @@ export default function UploadsPage() {
   const [history, setHistory] = useState<UploadHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [parseStages, setParseStages] = useState<Array<{
+    stage: string;
+    message: string;
+    current: number;
+    total: number;
+    details?: string;
+  }>>([]);
+  const [currentStage, setCurrentStage] = useState<string>('');
   const [importLoading, setImportLoading] = useState(false);
   const [importProgress, setImportProgress] = useState({
     stage: '',
@@ -186,32 +194,73 @@ export default function UploadsPage() {
 
   const generatePreview = async (file: File) => {
     setPreviewLoading(true);
+    setParseStages([]);
+    setCurrentStage('');
 
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      const response = await fetch("/api/uploads/preview", {
+      // Use streaming API for real-time progress
+      const response = await fetch("/api/uploads/stream", {
         method: "POST",
         body: formData
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setResult(data);
-        toast.success(`Parsed ${data.metadata.totalStands} stands from ${data.metadata.totalSheets} sheets`);
-      } else {
-        let errorMsg = "Failed to preview file";
-        try {
-          const errorText = await response.text();
-          if (errorText) {
-            const errorData = JSON.parse(errorText);
-            errorMsg = errorData.error || errorMsg;
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let finalResult: any = null;
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                
+                if (data.stage === 'error') {
+                  toast.error(data.details || data.message);
+                  setPreviewLoading(false);
+                  return;
+                }
+
+                if (data.stage === 'complete' && data.details?.startsWith('{')) {
+                  // Final result
+                  finalResult = JSON.parse(data.details);
+                } else {
+                  // Progress update
+                  setCurrentStage(data.stage);
+                  setParseStages(prev => {
+                    const existing = prev.findIndex(p => p.stage === data.stage);
+                    if (existing >= 0) {
+                      const updated = [...prev];
+                      updated[existing] = data;
+                      return updated;
+                    }
+                    return [...prev, data];
+                  });
+                }
+              } catch (e) {
+                // Ignore parse errors for incomplete chunks
+              }
+            }
           }
-        } catch {
-          // Response body was empty or not JSON
         }
-        toast.error(errorMsg);
+      }
+
+      if (finalResult) {
+        setResult(finalResult);
+        toast.success(`Parsed ${finalResult.metadata.totalStands} stands from ${finalResult.metadata.totalSheets} sheets`);
       }
     } catch (error) {
       toast.error("Failed to generate preview");
@@ -333,6 +382,8 @@ export default function UploadsPage() {
     setImportSummary(null);
     setSelectedEstate("all");
     setSelectedDevelopment(NO_DEVELOPMENT_VALUE);
+    setParseStages([]);
+    setCurrentStage('');
     toast.info("Upload cleared");
   };
 
@@ -411,9 +462,73 @@ export default function UploadsPage() {
               <FileUpload onUpload={handleFileSelect} accept=".xlsx,.xls" />
 
               {previewLoading && (
-                <div className="flex items-center justify-center gap-2 text-slate-500 py-4">
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                  <span>Analyzing ledger with multiple sheets...</span>
+                <div className="py-6 space-y-4">
+                  {/* Progress bar */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="font-medium text-slate-700">
+                        {parseStages.length > 0 && parseStages[parseStages.length - 1].message}
+                      </span>
+                      <span className="text-slate-500">
+                        {parseStages.length > 0 && `${parseStages[parseStages.length - 1].current}%`}
+                      </span>
+                    </div>
+                    <Progress 
+                      value={parseStages.length > 0 ? parseStages[parseStages.length - 1].current : 0} 
+                      className="h-2"
+                    />
+                  </div>
+
+                  {/* Stage indicators */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {[
+                      { id: 'reading', label: 'Reading File', icon: FileSpreadsheet },
+                      { id: 'parsing_sheets', label: 'Parsing Sheets', icon: Building2 },
+                      { id: 'detecting_stands', label: 'Detecting Stands', icon: Home },
+                      { id: 'processing_transactions', label: 'Processing Txns', icon: Receipt },
+                      { id: 'aggregating', label: 'Grouping Data', icon: Users },
+                      { id: 'calculating', label: 'Calculating', icon: TrendingUp },
+                    ].map(({ id, label, icon: Icon }) => {
+                      const stage = parseStages.find(s => s.stage === id);
+                      const isActive = currentStage === id;
+                      const isComplete = stage && stage.current >= 100;
+                      const hasStarted = !!stage;
+
+                      return (
+                        <div 
+                          key={id}
+                          className={`flex items-center gap-2 p-2 rounded-lg text-sm transition-colors ${
+                            isActive ? 'bg-blue-50 border border-blue-200' :
+                            isComplete ? 'bg-emerald-50 border border-emerald-200' :
+                            hasStarted ? 'bg-slate-50 border border-slate-200' :
+                            'bg-slate-50/50 border border-slate-100 opacity-50'
+                          }`}
+                        >
+                          {isComplete ? (
+                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                          ) : isActive ? (
+                            <Loader2 className="h-4 w-4 text-blue-600 animate-spin" />
+                          ) : (
+                            <Icon className="h-4 w-4 text-slate-400" />
+                          )}
+                          <span className={`truncate ${
+                            isActive ? 'text-blue-700 font-medium' :
+                            isComplete ? 'text-emerald-700' :
+                            'text-slate-500'
+                          }`}>
+                            {label}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Current stage details */}
+                  {parseStages.length > 0 && parseStages[parseStages.length - 1].details && (
+                    <p className="text-xs text-slate-500 bg-slate-50 p-2 rounded">
+                      {parseStages[parseStages.length - 1].details}
+                    </p>
+                  )}
                 </div>
               )}
             </CardContent>

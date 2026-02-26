@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // GET /api/receipts - Get all receipts for the current user
 export async function GET(request: NextRequest) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -19,107 +19,68 @@ export async function GET(request: NextRequest) {
     const standNumber = searchParams.get("standNumber");
     const clientName = searchParams.get("clientName");
 
-    const supabase = await createClient();
+    const sql = getDb();
 
-    // First get user's uploads (receipts are tied to uploads)
-    let query = supabase
-      .from("uploads")
-      .select(`
-        id,
-        file_name,
-        created_at,
-        status,
-        user_id,
-        development:development_id (
-          name
-        )
-      `)
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+    // Optimize with a single query joining uploads and transactions
+    const receipts = await sql`
+      SELECT 
+        u.id,
+        u.file_name as receipt_number,
+        u.created_at as date,
+        u.status,
+        u.user_id as created_by,
+        d.name as development_name,
+        COALESCE(t.total_amount, 0) as amount,
+        COALESCE(t.tx_count, 0) as transaction_count,
+        t.client_name,
+        t.stand_number
+      FROM uploads u
+      LEFT JOIN developments d ON u.development_id = d.id
+      LEFT JOIN (
+        SELECT 
+          tp.upload_id,
+          SUM(tp.amount) as total_amount,
+          COUNT(tp.id) as tx_count,
+          MAX(ds.client_name) as client_name,
+          MAX(si.stand_number) as stand_number
+        FROM payment_transactions tp
+        LEFT JOIN development_stands ds ON tp.stand_id = ds.id
+        LEFT JOIN stand_inventory si ON tp.stand_inventory_id = si.id
+        GROUP BY tp.upload_id
+      ) t ON u.id = t.upload_id
+      WHERE u.user_id = ${userId}
+      -- Filter by 'receipts' (which are stored as uploads with .json extension or specifically marked)
+      -- In this app, manually created receipts follow a specific naming convention or we can filter by raw_data presence
+      AND (u.file_name ILIKE '%.json' OR u.raw_data->>'receiptNumber' IS NOT NULL)
+      ${developmentId ? sql`AND u.development_id = ${developmentId}` : sql``}
+      ${startDate ? sql`AND u.created_at >= ${startDate}` : sql``}
+      ${endDate ? sql`AND u.created_at <= ${endDate}` : sql``}
+      ${receiptNumber ? sql`AND u.file_name ILIKE ${'%' + receiptNumber + '%'}` : sql``}
+      ${standNumber ? sql`AND t.stand_number ILIKE ${'%' + standNumber + '%'}` : sql``}
+      ${clientName ? sql`AND t.client_name ILIKE ${'%' + clientName + '%'}` : sql``}
+      ORDER BY u.created_at DESC
+    `;
 
-    if (developmentId) {
-      query = query.eq("development_id", developmentId);
-    }
+    const transformedReceipts = receipts.map((r: any) => ({
+      id: r.id,
+      receiptNumber: r.receipt_number?.replace(/\.[^/.]+$/, ""),
+      date: r.date,
+      client: r.client_name || "N/A",
+      stand: r.stand_number || "N/A",
+      development: r.development_name,
+      amount: parseFloat(r.amount || 0),
+      status: r.status,
+      createdBy: r.created_by,
+      transactionCount: parseInt(r.transaction_count || 0),
+    }));
 
-    if (startDate) {
-      query = query.gte("created_at", startDate);
-    }
-
-    if (endDate) {
-      query = query.lte("created_at", endDate);
-    }
-
-    const { data: uploads, error } = await query;
-
-    if (error) {
-      console.error("Error fetching receipts:", error);
-      return NextResponse.json({ 
-        error: "Database error", 
-        details: error.message 
-      }, { status: 500 });
-    }
-
-    // Get transactions for each upload to build receipt data
-    const receiptsWithDetails = await Promise.all(
-      (uploads || []).map(async (upload: any) => {
-        const { data: transactions } = await supabase
-          .from("payment_transactions")
-          .select(`
-            *,
-            stand:stand_id (
-              stand_inventory:stand_inventory_id (
-                stand_number
-              ),
-              client_name
-            )
-          `)
-          .eq("upload_id", upload.id);
-
-        const totalAmount = transactions?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0;
-
-        return {
-          id: upload.id,
-          receiptNumber: upload.file_name?.replace(/\.[^/.]+$/, ""), // Remove extension
-          date: upload.created_at,
-          client: transactions?.[0]?.stand?.client_name || "N/A",
-          stand: transactions?.[0]?.stand?.stand_inventory?.stand_number || "N/A",
-          development: upload.development?.name,
-          amount: totalAmount,
-          status: upload.status,
-          createdBy: upload.user_id,
-          transactionCount: transactions?.length || 0,
-        };
-      })
-    );
-
-    // Apply additional filters
-    let filteredReceipts = receiptsWithDetails;
-    
-    if (receiptNumber) {
-      filteredReceipts = filteredReceipts.filter(r => 
-        r.receiptNumber?.toLowerCase().includes(receiptNumber.toLowerCase())
-      );
-    }
-
-    if (standNumber) {
-      filteredReceipts = filteredReceipts.filter(r => 
-        r.stand?.toLowerCase().includes(standNumber.toLowerCase())
-      );
-    }
-
-    if (clientName) {
-      filteredReceipts = filteredReceipts.filter(r => 
-        r.client?.toLowerCase().includes(clientName.toLowerCase())
-      );
-    }
-
-    return NextResponse.json({ receipts: filteredReceipts });
+    return NextResponse.json({ receipts: transformedReceipts });
 
   } catch (err) {
     console.error("Unexpected error in GET /api/receipts:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -128,88 +89,67 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
-    const supabase = await createClient();
+    const sql = getDb();
 
     // Check for duplicate receipt number
-    const { data: existing } = await supabase
-      .from("uploads")
-      .select("id")
-      .eq("file_name", `${body.receiptNumber}.json`)
-      .eq("user_id", userId)
-      .single();
+    const existing = await sql`
+      SELECT id FROM uploads 
+      WHERE file_name = ${body.receiptNumber + '.json'} AND user_id = ${userId}
+    `;
 
-    if (existing) {
-      return NextResponse.json({ 
-        error: "Duplicate receipt number", 
-        details: "A receipt with this number already exists" 
+    if (existing.length > 0) {
+      return NextResponse.json({
+        error: "Duplicate receipt number",
+        details: "A receipt with this number already exists"
       }, { status: 409 });
     }
 
-    // Create upload record (receipts are stored as uploads)
-    const { data: upload, error: uploadError } = await supabase
-      .from("uploads")
-      .insert({
-        user_id: userId,
-        development_id: body.developmentId,
-        file_name: `${body.receiptNumber}.json`,
-        file_path: `receipts/${userId}/${body.receiptNumber}.json`,
-        file_size: 0,
-        status: "Completed",
-        stands_detected: 1,
-        transactions_detected: 1,
-        raw_data: { receiptNumber: body.receiptNumber, notes: body.notes },
-        completed_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
+    // Create upload record
+    const uploadResults = await sql`
+      INSERT INTO uploads (
+        user_id, development_id, file_name, file_path, 
+        file_size, status, stands_detected, transactions_detected, raw_data,
+        completed_at
+      ) VALUES (
+        ${userId}, ${body.developmentId}, ${body.receiptNumber + '.json'}, 
+        ${`receipts/${userId}/${body.receiptNumber}.json`}, 0, 
+        'Completed', 1, 1, 
+        ${JSON.stringify({ receiptNumber: body.receiptNumber, notes: body.notes })},
+        NOW()
+      ) RETURNING *
+    `;
 
-    if (uploadError) {
-      console.error("Error creating receipt:", uploadError);
-      return NextResponse.json({ 
-        error: "Failed to create receipt", 
-        details: uploadError.message 
-      }, { status: 500 });
-    }
+    const upload = uploadResults[0];
 
     // Create payment transaction for the receipt
-    const { data: transaction, error: txError } = await supabase
-      .from("payment_transactions")
-      .insert({
-        user_id: userId,
-        upload_id: upload.id,
-        development_id: body.developmentId,
-        stand_id: body.standId,
-        transaction_date: body.receiptDate,
-        amount: body.amount,
-        reference: body.receiptNumber,
-        description: body.notes || `Receipt ${body.receiptNumber}`,
-        status: "Matched",
-        idempotency_key: `${upload.id}-${body.standId}-receipt`,
-      })
-      .select()
-      .single();
+    const txResults = await sql`
+      INSERT INTO payment_transactions (
+        user_id, upload_id, development_id, stand_id, transaction_date,
+        amount, reference, description, status, idempotency_key
+      ) VALUES (
+        ${userId}, ${upload.id}, ${body.developmentId}, ${body.standId},
+        ${body.receiptDate}, ${body.amount}, ${body.receiptNumber},
+        ${body.notes || `Receipt ${body.receiptNumber}`}, 'Matched',
+        ${upload.id + '-' + body.standId + '-receipt'}
+      ) RETURNING *
+    `;
 
-    if (txError) {
-      console.error("Error creating transaction:", txError);
-      // Don't fail - receipt is created, transaction can be added later
-    }
-
-    return NextResponse.json({ 
-      receipt: upload, 
-      transaction 
+    return NextResponse.json({
+      receipt: upload,
+      transaction: txResults[0]
     }, { status: 201 });
 
   } catch (err) {
     console.error("Unexpected error in POST /api/receipts:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }

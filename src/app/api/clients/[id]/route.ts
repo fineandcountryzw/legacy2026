@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // GET /api/clients/[id] - Get client details
 export async function GET(
@@ -9,89 +9,75 @@ export async function GET(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { data: client, error } = await supabase
-      .from("clients")
-      .select("*")
-      .eq("id", id)
-      .eq("user_id", userId)
-      .single();
+    // 1. Fetch client metadata
+    const clientResults = await sql`
+      SELECT * FROM clients
+      WHERE id = ${id} AND user_id = ${userId}
+    `;
 
-    if (error) {
-      console.error("Error fetching client:", error);
-      return NextResponse.json({ 
-        error: "Client not found", 
-        details: error.message 
-      }, { status: 404 });
+    const client = clientResults[0];
+    if (!client) {
+      return NextResponse.json({ error: "Client not found" }, { status: 404 });
     }
 
-    // Get stands for this client
-    const { data: stands } = await supabase
-      .from("development_stands")
-      .select(`
-        id,
-        agreed_price,
-        status,
-        development:development_id (
-          name,
-          currency
-        ),
-        stand_inventory:stand_inventory_id (
-          stand_number
-        )
-      `)
-      .eq("client_id", id);
+    // 2. Fetch stands for this client with balances
+    const standsWithBalances = await sql`
+      SELECT 
+        ds.id,
+        ds.agreed_price,
+        ds.status,
+        d.name as development_name,
+        d.currency,
+        si.stand_number,
+        COALESCE(tp.total_paid, 0) as total_paid
+      FROM development_stands ds
+      JOIN developments d ON ds.development_id = d.id
+      JOIN stand_inventory si ON ds.stand_inventory_id = si.id
+      LEFT JOIN (
+        SELECT stand_id, SUM(amount) as total_paid
+        FROM payment_transactions
+        GROUP BY stand_id
+      ) tp ON ds.id = tp.stand_id
+      WHERE ds.client_id = ${id}
+    `;
 
-    // Get receipts/payments for this client
-    const { data: receipts } = await supabase
-      .from("payment_transactions")
-      .select(`
-        *,
-        stand:stand_id (
-          stand_inventory:stand_inventory_id (
-            stand_number
-          )
-        )
-      `)
-      .eq("client_id", id)
-      .order("transaction_date", { ascending: false });
+    const parsedStands = standsWithBalances.map((s: any) => ({
+      id: s.id,
+      standNumber: s.stand_number,
+      developmentName: s.development_name,
+      currency: s.currency,
+      status: s.status,
+      agreedPrice: parseFloat(s.agreed_price || 0),
+      totalPaid: parseFloat(s.total_paid || 0),
+      balance: parseFloat(s.agreed_price || 0) - parseFloat(s.total_paid || 0),
+    }));
 
-    const standsWithBalances = (stands || []).map((stand: any) => {
-      // Handle potential array returns
-      const development = Array.isArray(stand.development) 
-        ? stand.development[0] 
-        : stand.development;
-      const standInventory = Array.isArray(stand.stand_inventory) 
-        ? stand.stand_inventory[0] 
-        : stand.stand_inventory;
-      
-      const standReceipts = receipts?.filter(r => r.stand_id === stand.id) || [];
-      const totalPaid = standReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
-      return {
-        id: stand.id,
-        standNumber: standInventory?.stand_number,
-        developmentName: development?.name,
-        currency: development?.currency,
-        status: stand.status,
-        agreedPrice: stand.agreed_price,
-        totalPaid,
-        balance: (stand.agreed_price || 0) - totalPaid,
-      };
-    });
+    // 3. Fetch receipts/payments for this client
+    const receipts = await sql`
+      SELECT 
+        t.*,
+        si.stand_number
+      FROM payment_transactions t
+      LEFT JOIN development_stands ds ON t.stand_id = ds.id
+      LEFT JOIN stand_inventory si ON ds.stand_inventory_id = si.id
+      WHERE t.client_id = ${id}
+      ORDER BY t.transaction_date DESC
+    `;
 
-    const totalPaid = standsWithBalances.reduce((sum, s) => sum + s.totalPaid, 0);
-    const totalBalance = standsWithBalances.reduce((sum, s) => sum + s.balance, 0);
+    const totalPaid = parsedStands.reduce((sum, s) => sum + s.totalPaid, 0);
+    const totalBalance = parsedStands.reduce((sum, s) => sum + s.balance, 0);
 
     const clientWithDetails = {
       ...client,
-      stands: standsWithBalances,
+      stands: parsedStands,
       receipts: receipts || [],
       totalPaid,
       totalBalance,
@@ -101,9 +87,9 @@ export async function GET(
 
   } catch (err) {
     console.error("Unexpected error in GET /api/clients/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -115,42 +101,38 @@ export async function PUT(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
     const body = await request.json();
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { data: client, error } = await supabase
-      .from("clients")
-      .update({
-        name: body.name,
-        email: body.email,
-        phone: body.phone,
-        id_number: body.idNumber,
-      })
-      .eq("id", id)
-      .eq("user_id", userId)
-      .select()
-      .single();
+    const results = await sql`
+      UPDATE clients
+      SET
+        name = ${body.name},
+        email = ${body.email || null},
+        phone = ${body.phone || null},
+        id_number = ${body.idNumber || null},
+        updated_at = NOW()
+      WHERE id = ${id} AND user_id = ${userId}
+      RETURNING *
+    `;
 
-    if (error) {
-      return NextResponse.json({ 
-        error: "Failed to update client", 
-        details: error.message 
-      }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "Client not found" }, { status: 404 });
     }
 
-    return NextResponse.json(client);
+    return NextResponse.json(results[0]);
 
   } catch (err) {
     console.error("Unexpected error in PUT /api/clients/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -162,34 +144,29 @@ export async function DELETE(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { error } = await supabase
-      .from("clients")
-      .delete()
-      .eq("id", id)
-      .eq("user_id", userId);
+    const results = await sql`
+      DELETE FROM clients WHERE id = ${id} AND user_id = ${userId} RETURNING id
+    `;
 
-    if (error) {
-      return NextResponse.json({ 
-        error: "Failed to delete client", 
-        details: error.message 
-      }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "Client not found or already deleted" }, { status: 404 });
     }
 
     return NextResponse.json({ success: true });
 
   } catch (err) {
     console.error("Unexpected error in DELETE /api/clients/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }

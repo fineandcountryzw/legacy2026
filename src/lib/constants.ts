@@ -7,7 +7,8 @@ import {
     Users,
     FileText,
     Settings,
-    BarChart3
+    BarChart3,
+    Wrench
 } from "lucide-react";
 import { NavItem } from "@/types";
 
@@ -20,5 +21,6 @@ export const navItems: NavItem[] = [
     { title: "Reports", href: "/dashboard/reports", icon: BarChart3 },
     { title: "Clients", href: "/dashboard/clients", icon: Users },
     { title: "Statements", href: "/dashboard/statements", icon: FileText },
+    { title: "Repair Data", href: "/dashboard/admin/repair-transactions", icon: Wrench },
     { title: "Settings", href: "/dashboard/settings", icon: Settings },
 ];

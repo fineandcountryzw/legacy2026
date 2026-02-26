@@ -1,10 +1,16 @@
+-- =====================================================
+-- STAND INVENTORY PLATFORM - NEON DATABASE SETUP
+-- =====================================================
+
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 1. BRAND PROFILES (Global + Per Development)
-CREATE TABLE brand_profiles (
+-- =====================================================
+-- 1. BRAND PROFILES
+-- =====================================================
+CREATE TABLE IF NOT EXISTS brand_profiles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
     company_name TEXT NOT NULL,
     logo_url TEXT,
     contact_details JSONB DEFAULT '{}',
@@ -16,10 +22,12 @@ CREATE TABLE brand_profiles (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =====================================================
 -- 2. DEVELOPMENTS
-CREATE TABLE developments (
+-- =====================================================
+CREATE TABLE IF NOT EXISTS developments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     code TEXT NOT NULL,
     currency TEXT DEFAULT 'USD' CHECK (currency IN ('USD', 'ZIG', 'ZAR')),
@@ -27,13 +35,22 @@ CREATE TABLE developments (
     developer_contacts TEXT,
     commission_rate DECIMAL(5,4) DEFAULT 0.05,
     brand_profile_id UUID REFERENCES brand_profiles(id),
+    email TEXT,
+    phone TEXT,
+    address TEXT,
+    website TEXT,
+    primary_color TEXT DEFAULT '#0f172a',
+    secondary_color TEXT DEFAULT '#2563eb',
+    accent_color TEXT DEFAULT '#3b82f6',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(user_id, code)
 );
 
+-- =====================================================
 -- 3. DEVELOPMENT STAND TYPES
-CREATE TABLE development_stand_types (
+-- =====================================================
+CREATE TABLE IF NOT EXISTS development_stand_types (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     development_id UUID REFERENCES developments(id) ON DELETE CASCADE,
     label TEXT NOT NULL,
@@ -43,8 +60,10 @@ CREATE TABLE development_stand_types (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =====================================================
 -- 4. DEVELOPMENT COST ITEMS
-CREATE TABLE development_cost_items (
+-- =====================================================
+CREATE TABLE IF NOT EXISTS development_cost_items (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     development_id UUID REFERENCES developments(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -57,16 +76,20 @@ CREATE TABLE development_cost_items (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =====================================================
 -- 5. STAND INVENTORY (Canonical stands)
-CREATE TABLE stand_inventory (
+-- =====================================================
+CREATE TABLE IF NOT EXISTS stand_inventory (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     canonical_stand_key TEXT UNIQUE NOT NULL,
     stand_number TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 6. DEVELOPMENT STANDS (Junction: links inventory to development)
-CREATE TABLE development_stands (
+-- =====================================================
+-- 6. DEVELOPMENT STANDS
+-- =====================================================
+CREATE TABLE IF NOT EXISTS development_stands (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     development_id UUID REFERENCES developments(id) ON DELETE CASCADE,
     stand_inventory_id UUID REFERENCES stand_inventory(id) ON DELETE CASCADE,
@@ -79,10 +102,12 @@ CREATE TABLE development_stands (
     UNIQUE(development_id, stand_inventory_id)
 );
 
+-- =====================================================
 -- 7. UPLOADS
-CREATE TABLE uploads (
+-- =====================================================
+CREATE TABLE IF NOT EXISTS uploads (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
     development_id UUID REFERENCES developments(id) ON DELETE SET NULL,
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
@@ -96,25 +121,33 @@ CREATE TABLE uploads (
     completed_at TIMESTAMPTZ
 );
 
--- 8. PAYMENT TRANSACTIONS
-CREATE TABLE payment_transactions (
+-- =====================================================
+-- 8. PAYMENT TRANSACTIONS (with standalone import support)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS payment_transactions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
     upload_id UUID REFERENCES uploads(id) ON DELETE SET NULL,
     development_id UUID REFERENCES developments(id) ON DELETE CASCADE,
     stand_id UUID REFERENCES development_stands(id) ON DELETE SET NULL,
+    stand_inventory_id UUID REFERENCES stand_inventory(id) ON DELETE SET NULL,
     transaction_date DATE NOT NULL,
     amount DECIMAL(12,2) NOT NULL,
     reference TEXT,
     description TEXT,
+    category TEXT,
+    side TEXT,
+    sheet_name TEXT,
     status TEXT DEFAULT 'Unmatched' CHECK (status IN ('Matched', 'Unmatched', 'Mismatch')),
     source_row_index INTEGER,
     idempotency_key TEXT UNIQUE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =====================================================
 -- 9. TRANSACTION ALLOCATIONS
-CREATE TABLE transaction_allocations (
+-- =====================================================
+CREATE TABLE IF NOT EXISTS transaction_allocations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     transaction_id UUID REFERENCES payment_transactions(id) ON DELETE CASCADE,
     allocation_type TEXT CHECK (allocation_type IN ('stand_price', 'admin_fee', 'legal_fee', 'commission', 'other_cost', 'refund')),
@@ -123,10 +156,12 @@ CREATE TABLE transaction_allocations (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =====================================================
 -- 10. CLIENTS
-CREATE TABLE clients (
+-- =====================================================
+CREATE TABLE IF NOT EXISTS clients (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     email TEXT,
     phone TEXT,
@@ -134,47 +169,44 @@ CREATE TABLE clients (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Indexes for performance
-CREATE INDEX idx_developments_user_id ON developments(user_id);
-CREATE INDEX idx_development_stands_dev_id ON development_stands(development_id);
-CREATE INDEX idx_development_stands_inv_id ON development_stands(stand_inventory_id);
-CREATE INDEX idx_transactions_dev_id ON payment_transactions(development_id);
-CREATE INDEX idx_transactions_stand_id ON payment_transactions(stand_id);
-CREATE INDEX idx_transactions_upload_id ON payment_transactions(upload_id);
-CREATE INDEX idx_allocations_transaction_id ON transaction_allocations(transaction_id);
-CREATE INDEX idx_stand_inventory_key ON stand_inventory(canonical_stand_key);
-CREATE INDEX idx_uploads_user_id ON uploads(user_id);
-CREATE INDEX idx_clients_user_id ON clients(user_id);
+-- =====================================================
+-- 11. AUDIT EVENTS (Activity Logging)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS audit_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    actor TEXT NOT NULL,
+    actor_name TEXT NOT NULL DEFAULT 'Unknown',
+    action TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT,
+    summary TEXT,
+    metadata JSONB DEFAULT '{}',
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
 
--- RLS POLICIES
-ALTER TABLE brand_profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE developments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE development_stand_types ENABLE ROW LEVEL SECURITY;
-ALTER TABLE development_cost_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE stand_inventory ENABLE ROW LEVEL SECURITY;
-ALTER TABLE development_stands ENABLE ROW LEVEL SECURITY;
-ALTER TABLE uploads ENABLE ROW LEVEL SECURITY;
-ALTER TABLE payment_transactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE transaction_allocations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+-- =====================================================
+-- INDEXES
+-- =====================================================
+CREATE INDEX IF NOT EXISTS idx_developments_user_id ON developments(user_id);
+CREATE INDEX IF NOT EXISTS idx_development_stands_dev_id ON development_stands(development_id);
+CREATE INDEX IF NOT EXISTS idx_development_stands_inv_id ON development_stands(stand_inventory_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_dev_id ON payment_transactions(development_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_stand_id ON payment_transactions(stand_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_stand_inv_id ON payment_transactions(stand_inventory_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_upload_id ON payment_transactions(upload_id);
+CREATE INDEX IF NOT EXISTS idx_allocations_transaction_id ON transaction_allocations(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_stand_inventory_key ON stand_inventory(canonical_stand_key);
+CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads(user_id);
+CREATE INDEX IF NOT EXISTS idx_clients_user_id ON clients(user_id);
+CREATE INDEX IF NOT EXISTS idx_brand_profiles_user_id ON brand_profiles(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events(actor);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(action);
+CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_type, entity_id);
 
--- RLS: Users can only see their own data
-CREATE POLICY "Users own their brand_profiles" ON brand_profiles FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their developments" ON developments FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their stand_types" ON development_stand_types FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND d.user_id = auth.uid()));
-CREATE POLICY "Users own their cost_items" ON development_cost_items FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND d.user_id = auth.uid()));
-CREATE POLICY "Users own their stands" ON development_stands FOR ALL USING (EXISTS (SELECT 1 FROM developments d WHERE d.id = development_id AND d.user_id = auth.uid()));
-CREATE POLICY "Users own their uploads" ON uploads FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their transactions" ON payment_transactions FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users own their allocations" ON transaction_allocations FOR ALL USING (EXISTS (SELECT 1 FROM payment_transactions t WHERE t.id = transaction_id AND t.user_id = auth.uid()));
-CREATE POLICY "Users own their clients" ON clients FOR ALL USING (auth.uid() = user_id);
-
--- Allow all users to read stand_inventory (shared canonical data)
-CREATE POLICY "Stand inventory is readable by all" ON stand_inventory FOR SELECT USING (true);
-CREATE POLICY "Users can insert stand_inventory" ON stand_inventory FOR INSERT WITH CHECK (true);
-CREATE POLICY "Users can update stand_inventory" ON stand_inventory FOR UPDATE USING (true);
-
--- Function to update updated_at timestamp
+-- =====================================================
+-- TRIGGERS
+-- =====================================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -183,6 +215,10 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Triggers for updated_at
+DROP TRIGGER IF EXISTS update_brand_profiles_updated_at ON brand_profiles;
+DROP TRIGGER IF EXISTS update_developments_updated_at ON developments;
+
 CREATE TRIGGER update_brand_profiles_updated_at BEFORE UPDATE ON brand_profiles FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_developments_updated_at BEFORE UPDATE ON developments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+SELECT 'Neon database setup complete!' as status;

@@ -1,78 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
+import { getDb } from "@/lib/db";
 import { processExcelUpload } from "@/lib/import/importer";
 
 // GET /api/uploads - List upload history
 export async function GET() {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { createClient } = await import("@/lib/supabase/server");
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { data: uploads, error } = await supabase
-      .from("uploads")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      if (error.code === "22P02") {
-        console.warn("Skipping uploads query because user_id type does not match Clerk user IDs.", error);
-        return NextResponse.json([]);
-      }
-      console.error("Error fetching uploads:", error);
-      return NextResponse.json({ 
-        error: "Database error", 
-        details: error.message,
-        code: error.code 
-      }, { status: 500 });
-    }
-
-    const developmentIds = Array.from(
-      new Set(
-        (uploads || [])
-          .map((u: any) => u.development_id)
-          .filter((id: string | null) => Boolean(id))
-      )
-    ) as string[];
-
-    let developmentNames = new Map<string, string>();
-
-    if (developmentIds.length > 0) {
-      const { data: developmentRows, error: developmentError } = await supabase
-        .from("developments")
-        .select("id, name")
-        .in("id", developmentIds);
-
-      if (developmentError) {
-        console.warn("Failed to load development names for uploads:", developmentError);
-      } else {
-        developmentNames = new Map((developmentRows || []).map((d: any) => [d.id, d.name]));
-      }
-    }
+    // Fetch uploads and join with development name if exists
+    const uploads = await sql`
+      SELECT 
+        u.*, 
+        d.name as development_name
+      FROM uploads u
+      LEFT JOIN developments d ON u.development_id = d.id
+      WHERE u.user_id = ${userId}
+      ORDER BY u.created_at DESC
+    `;
 
     // Transform to match frontend types
-    const transformed = uploads?.map((u: any) => ({
+    const transformed = uploads.map((u: any) => ({
       id: u.id,
       fileName: u.file_name,
-      developmentName: u.development_id ? developmentNames.get(u.development_id) : undefined,
+      developmentName: u.development_name || undefined,
       date: u.created_at,
       standsDetected: u.stands_detected,
       transactionsDetected: u.transactions_detected,
       status: u.status
-    })) || [];
+    }));
 
     return NextResponse.json(transformed);
   } catch (err) {
     console.error("Unexpected error in GET /api/uploads:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -81,7 +50,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

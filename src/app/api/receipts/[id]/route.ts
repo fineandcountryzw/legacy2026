@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // GET /api/receipts/[id] - Get receipt details
 export async function GET(
@@ -9,75 +9,64 @@ export async function GET(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
-    const supabase = await createClient();
+    const sql = getDb();
 
-    const { data: upload, error } = await supabase
-      .from("uploads")
-      .select(`
-        *,
-        development:development_id (
-          name,
-          currency
-        )
-      `)
-      .eq("id", id)
-      .eq("user_id", userId)
-      .single();
+    const uploadResults = await sql`
+      SELECT 
+        u.*,
+        d.name as development_name,
+        d.currency
+      FROM uploads u
+      LEFT JOIN developments d ON u.development_id = d.id
+      WHERE u.id = ${id} AND u.user_id = ${userId}
+    `;
 
-    if (error) {
-      console.error("Error fetching receipt:", error);
-      return NextResponse.json({ 
-        error: "Receipt not found", 
-        details: error.message 
-      }, { status: 404 });
+    const upload = uploadResults[0];
+    if (!upload) {
+      return NextResponse.json({ error: "Receipt not found" }, { status: 404 });
     }
 
     // Get transactions for this receipt
-    const { data: transactions } = await supabase
-      .from("payment_transactions")
-      .select(`
-        *,
-        stand:stand_id (
-          stand_inventory:stand_inventory_id (
-            stand_number
-          ),
-          client_name,
-          development:development_id (
-            name
-          )
-        )
-      `)
-      .eq("upload_id", id);
-
-    // Handle potential array returns
-    const development = Array.isArray(upload.development) 
-      ? upload.development[0] 
-      : upload.development;
+    const transactions = await sql`
+      SELECT 
+        tp.*,
+        si.stand_number,
+        ds.client_name,
+        d.name as development_name
+      FROM payment_transactions tp
+      LEFT JOIN development_stands ds ON tp.stand_id = ds.id
+      LEFT JOIN stand_inventory si ON ds.stand_inventory_id = si.id
+      LEFT JOIN developments d ON tp.development_id = d.id
+      WHERE tp.upload_id = ${id}
+    `;
 
     const receiptWithDetails = {
       id: upload.id,
       receiptNumber: upload.file_name?.replace(/\.[^/.]+$/, ""),
       date: upload.created_at,
       status: upload.status,
-      development: development,
+      development: {
+        name: upload.development_name,
+        currency: upload.currency
+      },
       rawData: upload.raw_data,
       transactions: transactions || [],
-      totalAmount: transactions?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0,
+      totalAmount: transactions?.reduce((sum, t) => sum + parseFloat(t.amount || 0), 0) || 0,
     };
 
     return NextResponse.json(receiptWithDetails);
 
   } catch (err) {
     console.error("Unexpected error in GET /api/receipts/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -89,49 +78,45 @@ export async function PUT(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
     const body = await request.json();
-    const supabase = await createClient();
+    const sql = getDb();
 
     // Update upload status
-    const { data: upload, error } = await supabase
-      .from("uploads")
-      .update({
-        status: body.status || "Completed",
-        error_message: body.notes || null,
-      })
-      .eq("id", id)
-      .eq("user_id", userId)
-      .select()
-      .single();
+    const results = await sql`
+      UPDATE uploads
+      SET 
+        status = ${body.status || "Completed"},
+        error_message = ${body.notes || null}
+      WHERE id = ${id} AND user_id = ${userId}
+      RETURNING *
+    `;
 
-    if (error) {
-      return NextResponse.json({ 
-        error: "Failed to update receipt", 
-        details: error.message 
-      }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "Receipt not found" }, { status: 404 });
     }
 
     // If voiding, update related transactions
     if (body.status === "Failed") {
-      await supabase
-        .from("payment_transactions")
-        .update({ status: "Voided" })
-        .eq("upload_id", id);
+      await sql`
+        UPDATE payment_transactions
+        SET status = 'Voided'
+        WHERE upload_id = ${id}
+      `;
     }
 
-    return NextResponse.json(upload);
+    return NextResponse.json(results[0]);
 
   } catch (err) {
     console.error("Unexpected error in PUT /api/receipts/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }
@@ -143,41 +128,33 @@ export async function DELETE(
 ) {
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
-    const supabase = await createClient();
+    const sql = getDb();
 
     // First delete related transactions
-    await supabase
-      .from("payment_transactions")
-      .delete()
-      .eq("upload_id", id);
+    await sql`DELETE FROM payment_transactions WHERE upload_id = ${id}`;
 
     // Then delete the upload (receipt)
-    const { error } = await supabase
-      .from("uploads")
-      .delete()
-      .eq("id", id)
-      .eq("user_id", userId);
+    const results = await sql`
+      DELETE FROM uploads WHERE id = ${id} AND user_id = ${userId} RETURNING id
+    `;
 
-    if (error) {
-      return NextResponse.json({ 
-        error: "Failed to delete receipt", 
-        details: error.message 
-      }, { status: 500 });
+    if (results.length === 0) {
+      return NextResponse.json({ error: "Receipt not found or already deleted" }, { status: 404 });
     }
 
     return NextResponse.json({ success: true });
 
   } catch (err) {
     console.error("Unexpected error in DELETE /api/receipts/[id]:", err);
-    return NextResponse.json({ 
-      error: "Server error", 
-      details: err instanceof Error ? err.message : "Unknown error" 
+    return NextResponse.json({
+      error: "Server error",
+      details: err instanceof Error ? err.message : "Unknown error"
     }, { status: 500 });
   }
 }

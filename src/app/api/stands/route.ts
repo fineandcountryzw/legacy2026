@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db";
 
 // GET /api/stands - Get all stands for the current user (linked + standalone)
 export async function GET(request: NextRequest) {
@@ -14,142 +14,112 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const developmentId = searchParams.get("developmentId");
     const search = searchParams.get("search");
-    const includeStandalone = searchParams.get("standalone") !== "false"; // default: include standalone
+    const includeStandalone = searchParams.get("standalone") !== "false";
 
-    const supabase = await createClient();
+    const sql = getDb();
 
-    // --- Part 1: Linked stands (via development_stands) ---
-    let linkedQuery = supabase
-      .from("development_stands")
-      .select(`
-        id,
-        agreed_price,
-        status,
-        client_name,
-        stand_inventory:stand_inventory_id (
-          id,
-          stand_number
-        ),
-        development:development_id (
-          id,
-          name,
-          currency
-        ),
-        stand_type:stand_type_id (
-          label
-        )
-      `);
-
+    // 1. Fetch linked stands for this user
+    let linkedStandsQuery;
     if (developmentId) {
-      linkedQuery = linkedQuery.eq("development_id", developmentId);
-    }
-
-    // Filter by user's developments
-    const { data: userDevelopments } = await supabase
-      .from("developments")
-      .select("id")
-      .eq("user_id", userId);
-
-    const developmentIds = userDevelopments?.map(d => d.id) || [];
-    if (developmentIds.length > 0) {
-      linkedQuery = linkedQuery.in("development_id", developmentIds);
+      linkedStandsQuery = sql`
+        SELECT 
+          ds.id, ds.agreed_price, ds.status, ds.client_name, ds.client_id,
+          ds.stand_inventory_id, si.stand_number,
+          d.id as development_id, d.name as development_name, d.currency,
+          st.label as stand_type_label, st.base_price as stand_type_base_price,
+          c.phone as client_phone, c.email as client_email,
+          COALESCE(SUM(pt.amount), 0) as total_paid
+        FROM development_stands ds
+        JOIN stand_inventory si ON ds.stand_inventory_id = si.id
+        JOIN developments d ON ds.development_id = d.id
+        LEFT JOIN development_stand_types st ON ds.stand_type_id = st.id
+        LEFT JOIN clients c ON ds.client_id = c.id
+        LEFT JOIN payment_transactions pt ON ds.id = pt.stand_id
+        WHERE d.user_id = ${userId} AND d.id = ${developmentId}
+        GROUP BY ds.id, si.stand_number, d.id, d.name, d.currency, st.label, st.base_price, c.phone, c.email
+      `;
     } else {
-      // User has no developments — skip linked stands
-      linkedQuery = linkedQuery.in("development_id", ['__none__']);
+      linkedStandsQuery = sql`
+        SELECT 
+          ds.id, ds.agreed_price, ds.status, ds.client_name, ds.client_id,
+          ds.stand_inventory_id, si.stand_number,
+          d.id as development_id, d.name as development_name, d.currency,
+          st.label as stand_type_label, st.base_price as stand_type_base_price,
+          c.phone as client_phone, c.email as client_email,
+          COALESCE(SUM(pt.amount), 0) as total_paid
+        FROM development_stands ds
+        JOIN stand_inventory si ON ds.stand_inventory_id = si.id
+        JOIN developments d ON ds.development_id = d.id
+        LEFT JOIN development_stand_types st ON ds.stand_type_id = st.id
+        LEFT JOIN clients c ON ds.client_id = c.id
+        LEFT JOIN payment_transactions pt ON ds.id = pt.stand_id
+        WHERE d.user_id = ${userId}
+        GROUP BY ds.id, si.stand_number, d.id, d.name, d.currency, st.label, st.base_price, c.phone, c.email
+      `;
     }
 
-    const { data: linkedStands, error: linkedError } = await linkedQuery.order("created_at", { ascending: false });
+    const linkedStands = await linkedStandsQuery;
 
-    if (linkedError) {
-      console.error("Error fetching linked stands:", linkedError);
-      return NextResponse.json({ error: "Database error", details: linkedError.message }, { status: 500 });
-    }
+    const linkedWithTotals = linkedStands.map((stand: any) => {
+      // Use agreed_price if set, otherwise fall back to stand type base_price
+      const agreedPrice = parseFloat(stand.agreed_price || 0) > 0 
+        ? parseFloat(stand.agreed_price || 0)
+        : parseFloat(stand.stand_type_base_price || 0);
+      const totalPaid = parseFloat(stand.total_paid || 0);
+      
+      return {
+        id: stand.id,
+        standInventoryId: stand.stand_inventory_id,
+        standNumber: stand.stand_number,
+        developmentId: stand.development_id,
+        developmentName: stand.development_name,
+        currency: stand.currency,
+        standTypeLabel: stand.stand_type_label,
+        status: stand.status,
+        clientName: stand.client_name,
+        clientPhone: stand.client_phone,
+        clientEmail: stand.client_email,
+        agreedPrice: agreedPrice,
+        totalPaid: totalPaid,
+        balance: agreedPrice - totalPaid,
+        isStandalone: false,
+      };
+    });
 
-    // Calculate totals for linked stands
-    const linkedWithTotals = await Promise.all(
-      (linkedStands || []).map(async (stand: any) => {
-        const { data: transactions } = await supabase
-          .from("payment_transactions")
-          .select("amount")
-          .eq("stand_id", stand.id);
-
-        const totalPaid = transactions?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0;
-        const agreedPrice = stand.agreed_price || 0;
-        const standInventory = Array.isArray(stand.stand_inventory) ? stand.stand_inventory[0] : stand.stand_inventory;
-        const development = Array.isArray(stand.development) ? stand.development[0] : stand.development;
-        const standType = Array.isArray(stand.stand_type) ? stand.stand_type[0] : stand.stand_type;
-
-        return {
-          id: stand.id,
-          standInventoryId: standInventory?.id,
-          standNumber: standInventory?.stand_number,
-          developmentId: development?.id,
-          developmentName: development?.name,
-          currency: development?.currency,
-          standTypeLabel: standType?.label,
-          status: stand.status,
-          clientName: stand.client_name,
-          agreedPrice,
-          totalPaid,
-          balance: agreedPrice - totalPaid,
-          isStandalone: false,
-        };
-      })
-    );
-
-    // --- Part 2: Standalone stands (in stand_inventory but NOT in development_stands) ---
+    // 2. Fetch standalone stands (unassigned but have transactions)
     let standaloneStands: any[] = [];
-
     if (includeStandalone && !developmentId) {
-      // Get stand_inventory ids that are already linked to a development
-      const linkedInvIds = linkedWithTotals
-        .map(s => s.standInventoryId)
-        .filter(Boolean);
+      const standaloneResults = await sql`
+        SELECT 
+          si.id as stand_inventory_id,
+          si.stand_number,
+          COALESCE(SUM(pt.amount), 0) as total_paid
+        FROM stand_inventory si
+        JOIN payment_transactions pt ON si.id = pt.stand_inventory_id
+        WHERE pt.user_id = ${userId} AND pt.stand_id IS NULL
+        GROUP BY si.id, si.stand_number
+      `;
 
-      // Get all stand_inventory that have transactions for this user but no dev link
-      const { data: standaloneInventory } = await supabase
-        .from("stand_inventory")
-        .select("id, stand_number, canonical_stand_key")
-        .not("id", 'in', linkedInvIds.length > 0 ? `(${linkedInvIds.join(',')})` : '(__none__)');
-
-      if (standaloneInventory && standaloneInventory.length > 0) {
-        // Only show those that have transactions belonging to this user
-        standaloneStands = await Promise.all(
-          standaloneInventory.map(async (inv: any) => {
-            const { data: transactions } = await supabase
-              .from("payment_transactions")
-              .select("amount, category")
-              .eq("stand_inventory_id", inv.id)
-              .eq("user_id", userId);
-
-            if (!transactions || transactions.length === 0) return null;
-
-            const totalPaid = transactions.reduce((sum, t) => sum + (t.amount || 0), 0);
-
-            return {
-              id: `standalone-${inv.id}`,
-              standInventoryId: inv.id,
-              standNumber: inv.stand_number,
-              developmentId: null,
-              developmentName: null,
-              currency: "USD",
-              standTypeLabel: null,
-              status: "Unassigned",
-              clientName: null,
-              agreedPrice: 0,
-              totalPaid,
-              balance: -totalPaid,
-              isStandalone: true,
-            };
-          })
-        );
-        standaloneStands = standaloneStands.filter(Boolean);
-      }
+      standaloneStands = standaloneResults.map((inv: any) => ({
+        id: `standalone-${inv.stand_inventory_id}`,
+        standInventoryId: inv.stand_inventory_id,
+        standNumber: inv.stand_number,
+        developmentId: null,
+        developmentName: null,
+        currency: "USD",
+        standTypeLabel: null,
+        status: "Unassigned",
+        clientName: null,
+        agreedPrice: 0,
+        totalPaid: parseFloat(inv.total_paid || 0),
+        balance: -parseFloat(inv.total_paid || 0),
+        isStandalone: true,
+      }));
     }
 
     let allStands = [...linkedWithTotals, ...standaloneStands];
 
-    // Apply search filter
+    // 3. Apply search filter
     if (search) {
       const searchLower = search.toLowerCase();
       allStands = allStands.filter(s =>
@@ -180,48 +150,35 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const supabase = await createClient();
+    const sql = getDb();
 
-    // First create stand inventory
-    const { data: standInv, error: invError } = await supabase
-      .from("stand_inventory")
-      .insert({
-        canonical_stand_key: `${body.developmentId}:${body.standNumber}`,
-        stand_number: body.standNumber,
-      })
-      .select()
-      .single();
+    // 1. Create or get stand inventory
+    // Note: This logic assumes developmentId:standNumber is unique if using dev link
+    const standKey = body.developmentId
+      ? `${body.developmentId}:${body.standNumber}`
+      : `standalone:${userId}:${Date.now()}:${body.standNumber}`;
 
-    if (invError) {
-      return NextResponse.json({
-        error: "Failed to create stand inventory",
-        details: invError.message
-      }, { status: 500 });
-    }
+    const invResults = await sql`
+      INSERT INTO stand_inventory (canonical_stand_key, stand_number)
+      VALUES (${standKey}, ${body.standNumber})
+      ON CONFLICT (canonical_stand_key) DO UPDATE 
+      SET stand_number = EXCLUDED.stand_number
+      RETURNING *
+    `;
+    const standInv = invResults[0];
 
-    // Then create development stand (if development provided)
+    // 2. Create development stand (if development provided)
     if (body.developmentId) {
-      const { data: stand, error: standError } = await supabase
-        .from("development_stands")
-        .insert({
-          development_id: body.developmentId,
-          stand_inventory_id: standInv.id,
-          stand_type_id: body.standTypeId,
-          agreed_price: body.agreedPrice,
-          status: body.status || "Available",
-          client_name: body.clientName,
-        })
-        .select()
-        .single();
-
-      if (standError) {
-        return NextResponse.json({
-          error: "Failed to create development stand",
-          details: standError.message
-        }, { status: 500 });
-      }
-
-      return NextResponse.json(stand, { status: 201 });
+      const devStandResults = await sql`
+        INSERT INTO development_stands (
+          development_id, stand_inventory_id, stand_type_id,
+          agreed_price, status, client_name
+        ) VALUES (
+          ${body.developmentId}, ${standInv.id}, ${body.standTypeId},
+          ${body.agreedPrice}, ${body.status || "Available"}, ${body.clientName}
+        ) RETURNING *
+      `;
+      return NextResponse.json(devStandResults[0], { status: 201 });
     }
 
     return NextResponse.json(standInv, { status: 201 });
