@@ -5,9 +5,10 @@ import { FileUpload } from "@/components/file-upload";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { UploadHistory } from "@/types";
-import { 
-  Eye, Loader2, AlertCircle, CheckCircle2, FileSpreadsheet, 
+import {
+  Eye, Loader2, AlertCircle, CheckCircle2, FileSpreadsheet,
   ChevronDown, ChevronUp, Download, Building2, Users, Receipt, Home,
   TrendingUp, TrendingDown, Wallet, Database, X
 } from "lucide-react";
@@ -114,6 +115,12 @@ export default function UploadsPage() {
   const [loading, setLoading] = useState(true);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
+  const [importProgress, setImportProgress] = useState({
+    stage: '',
+    current: 0,
+    total: 0,
+    message: ''
+  });
   const [result, setResult] = useState<LedgerResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileBuffer, setFileBuffer] = useState<string | null>(null);
@@ -124,7 +131,7 @@ export default function UploadsPage() {
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [selectedDevelopment, setSelectedDevelopment] = useState<string>(NO_DEVELOPMENT_VALUE);
   const [developments, setDevelopments] = useState<{ id: string; name: string; code: string }[]>([]);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch upload history
@@ -165,7 +172,7 @@ export default function UploadsPage() {
     setExpandedStand(null);
     setSelectedEstate("all");
     setImportSummary(null);
-    
+
     // Convert file to base64 for later import
     const reader = new FileReader();
     reader.onload = () => {
@@ -173,13 +180,13 @@ export default function UploadsPage() {
       setFileBuffer(base64);
     };
     reader.readAsDataURL(file);
-    
+
     await generatePreview(file);
   };
 
   const generatePreview = async (file: File) => {
     setPreviewLoading(true);
-    
+
     const formData = new FormData();
     formData.append("file", file);
 
@@ -194,8 +201,17 @@ export default function UploadsPage() {
         setResult(data);
         toast.success(`Parsed ${data.metadata.totalStands} stands from ${data.metadata.totalSheets} sheets`);
       } else {
-        const error = await response.json();
-        toast.error(error.error || "Failed to preview file");
+        let errorMsg = "Failed to preview file";
+        try {
+          const errorText = await response.text();
+          if (errorText) {
+            const errorData = JSON.parse(errorText);
+            errorMsg = errorData.error || errorMsg;
+          }
+        } catch {
+          // Response body was empty or not JSON
+        }
+        toast.error(errorMsg);
       }
     } catch (error) {
       toast.error("Failed to generate preview");
@@ -213,8 +229,12 @@ export default function UploadsPage() {
 
     setImportLoading(true);
     setShowImportDialog(true);
-    
-    const toastId = toast.loading("Importing data to database...");
+    setImportProgress({
+      stage: 'uploading',
+      current: 0,
+      total: result.metadata.totalTransactions,
+      message: 'Uploading file to server...'
+    });
 
     try {
       const response = await fetch("/api/uploads/import", {
@@ -229,22 +249,36 @@ export default function UploadsPage() {
 
       const data = await response.json();
 
-      if (response.ok && data.success) {
+      if (response.ok && data.summary) {
         setImportSummary(data.summary);
-        toast.success(
-          `Import complete! Created ${data.summary.standsCreated} stands and ${data.summary.transactionsCreated} transactions.`,
-          { id: toastId }
-        );
-        
+        setImportProgress({
+          stage: 'complete',
+          current: data.summary.transactionsCreated,
+          total: data.summary.transactionsCreated,
+          message: `Import complete! ${data.summary.transactionsCreated} transactions created.`
+        });
+
         // Refresh history
         fetchHistory();
       } else {
-        toast.error(data.error || "Import failed", { id: toastId });
+        toast.error(data.error || "Import failed");
         setImportSummary(data.summary);
+        setImportProgress({
+          stage: 'error',
+          current: 0,
+          total: 0,
+          message: data.error || "Import failed"
+        });
       }
     } catch (error) {
-      toast.error("Import failed: Network error", { id: toastId });
+      toast.error("Import failed: Network error");
       console.error(error);
+      setImportProgress({
+        stage: 'error',
+        current: 0,
+        total: 0,
+        message: "Network error"
+      });
     } finally {
       setImportLoading(false);
     }
@@ -278,7 +312,7 @@ export default function UploadsPage() {
       tx.side,
       tx.amount
     ].join(','));
-    
+
     const csv = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -328,7 +362,7 @@ export default function UploadsPage() {
   };
 
   // Filter stands based on selected estate
-  const filteredEstates = result?.estates.filter(e => 
+  const filteredEstates = result?.estates.filter(e =>
     selectedEstate === "all" || e.sheetName === selectedEstate
   ) || [];
 
@@ -357,7 +391,7 @@ export default function UploadsPage() {
   return (
     <div className="space-y-8">
       <Toaster position="top-right" richColors />
-      
+
       <div>
         <h1 className="text-3xl font-bold tracking-tight text-slate-900">Ledger Upload</h1>
         <p className="text-slate-500">Upload property development payment ledgers with multiple estates.</p>
@@ -375,7 +409,7 @@ export default function UploadsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <FileUpload onUpload={handleFileSelect} accept=".xlsx,.xls" />
-              
+
               {previewLoading && (
                 <div className="flex items-center justify-center gap-2 text-slate-500 py-4">
                   <Loader2 className="h-5 w-5 animate-spin" />
@@ -548,14 +582,14 @@ export default function UploadsPage() {
                             {estate.sheetName}
                             <Badge variant="outline">{estate.stands.length} stands</Badge>
                           </h3>
-                          
+
                           {estate.stands.map((stand) => (
                             <Collapsible
                               key={`${estate.sheetName}-${stand.standNumber}`}
                               open={expandedStand === `${estate.sheetName}-${stand.standNumber}`}
                               onOpenChange={() => setExpandedStand(
-                                expandedStand === `${estate.sheetName}-${stand.standNumber}` 
-                                  ? null 
+                                expandedStand === `${estate.sheetName}-${stand.standNumber}`
+                                  ? null
                                   : `${estate.sheetName}-${stand.standNumber}`
                               )}
                             >
@@ -662,9 +696,8 @@ export default function UploadsPage() {
                                                 </span>
                                               )}
                                             </td>
-                                            <td className={`p-3 text-right font-medium ${
-                                              tx.side === 'RECEIPT' ? 'text-emerald-600' : 'text-red-600'
-                                            }`}>
+                                            <td className={`p-3 text-right font-medium ${tx.side === 'RECEIPT' ? 'text-emerald-600' : 'text-red-600'
+                                              }`}>
                                               {tx.side === 'RECEIPT' ? '+' : '-'}${tx.amount.toLocaleString()}
                                             </td>
                                           </tr>
@@ -695,8 +728,8 @@ export default function UploadsPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {(selectedEstate === "all" 
-                              ? result.allTransactions 
+                            {(selectedEstate === "all"
+                              ? result.allTransactions
                               : result.allTransactions.filter(t => t.sheetName === selectedEstate)
                             ).map((tx, idx) => (
                               <tr key={idx} className="border-t">
@@ -710,9 +743,8 @@ export default function UploadsPage() {
                                     {tx.category.replace(/_/g, ' ')}
                                   </Badge>
                                 </td>
-                                <td className={`p-3 text-right font-medium ${
-                                  tx.side === 'RECEIPT' ? 'text-emerald-600' : 'text-red-600'
-                                }`}>
+                                <td className={`p-3 text-right font-medium ${tx.side === 'RECEIPT' ? 'text-emerald-600' : 'text-red-600'
+                                  }`}>
                                   {tx.side === 'RECEIPT' ? '+' : '-'}${tx.amount.toLocaleString()}
                                 </td>
                               </tr>
@@ -748,7 +780,7 @@ export default function UploadsPage() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button 
+                    <Button
                       onClick={handleImport}
                       disabled={importLoading}
                       className="bg-blue-600 hover:bg-blue-700"
@@ -885,14 +917,27 @@ export default function UploadsPage() {
               {importLoading ? "Importing..." : "Import Complete"}
             </DialogTitle>
             <DialogDescription>
-              {importLoading 
-                ? "Processing stands and transactions..." 
+              {importLoading
+                ? "Processing stands and transactions..."
                 : "Summary of imported data"
               }
             </DialogDescription>
           </DialogHeader>
 
-          {importSummary && (
+          {importLoading && (
+            <div className="py-6 space-y-4">
+              <div className="flex justify-between text-sm text-slate-600">
+                <span>{importProgress.message || 'Processing...'}</span>
+                <span>{importProgress.current} / {importProgress.total}</span>
+              </div>
+              <Progress
+                value={importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}
+                className="h-2"
+              />
+            </div>
+          )}
+
+          {!importLoading && importSummary && (
             <div className="space-y-6">
               {/* Success Stats */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
