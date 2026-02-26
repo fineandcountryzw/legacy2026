@@ -24,7 +24,7 @@ export function Sidebar() {
                     <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white">
                         <LayoutDashboard size={20} />
                     </div>
-                    {!isCollapsed && <span className="truncate">StandInv</span>}
+                    {!isCollapsed && <span className="truncate">Stands Recon F&C</span>}
                 </Link>
             </div>
 

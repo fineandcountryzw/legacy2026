@@ -7,7 +7,7 @@ export default function Home() {
     <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 px-4 text-center">
       <div className="max-w-3xl space-y-6">
         <h1 className="text-5xl font-extrabold tracking-tight text-slate-900 sm:text-6xl">
-          Stand Inventory & <span className="text-blue-600">Reconciliation</span>
+          Stands Recon <span className="text-blue-600">F&C</span>
         </h1>
         <p className="text-xl text-slate-600">
           Professional finance-style management system for stand inventories,

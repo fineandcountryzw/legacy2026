@@ -4,8 +4,8 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
-  title: "StandInv Platform",
-  description: "Stand Inventory & Reconciliation Platform",
+  title: "Stands Recon F&C",
+  description: "Stand Inventory & Reconciliation Platform for Fine & Country",
 };
 
 export default function RootLayout({

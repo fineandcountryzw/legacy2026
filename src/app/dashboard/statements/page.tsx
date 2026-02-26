@@ -410,7 +410,7 @@ export default function StatementsPage() {
       doc.text(`Generated: ${format(new Date(), 'MMMM do, yyyy')}`, margin, currentY + 7);
       
       // Right side - Logo and Company info
-      const companyName = brand?.companyName || 'StandInv Platform';
+      const companyName = brand?.companyName || 'Stands Recon F&C';
       let logoY = currentY - 6;
       let contactY = currentY + 2;
       
@@ -970,7 +970,7 @@ export default function StatementsPage() {
                     </div>
                     <div className="text-right">
                       <p className="font-bold text-lg" style={{ color: brandProfile?.primaryColor || '#0f172a' }}>
-                        {brandProfile?.companyName || 'StandInv Platform'}
+                        {brandProfile?.companyName || 'Stands Recon F&C'}
                       </p>
                       <p className="text-sm text-slate-500">
                         {brandProfile?.contactDetails?.address || 'Harare, Zimbabwe'}

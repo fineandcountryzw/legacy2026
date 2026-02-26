@@ -100,7 +100,7 @@ export default function StandsPage() {
         <div className="space-y-8">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight text-slate-900">Stand Inventory</h1>
+                    <h1 className="text-3xl font-bold tracking-tight text-slate-900">Stands</h1>
                     <p className="text-slate-500">Manage and track all individual property stands.</p>
                 </div>
                 <Button>Add New Stand</Button>
