@@ -8,22 +8,44 @@ import { toast } from "sonner";
 
 interface Stand {
     id: string;
+    standInventoryId?: string;
     standNumber: string;
     developmentName: string;
     clientName?: string;
     totalPaid?: number;
     balance?: number;
+    isStandalone?: boolean;
+}
+
+interface Transaction {
+    id: string;
+    date: string;
+    description: string;
+    amount: number;
+    reference?: string;
+    category?: string;
+    side?: string;
 }
 
 export default function StatementsPage() {
     const [stands, setStands] = useState<Stand[]>([]);
     const [selectedStand, setSelectedStand] = useState<string | null>(null);
+    const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isPreviewing, setIsPreviewing] = useState(false);
     const [loading, setLoading] = useState(true);
+    const [loadingTx, setLoadingTx] = useState(false);
 
     useEffect(() => {
         fetchStands();
     }, []);
+
+    useEffect(() => {
+        if (selectedStand) {
+            fetchTransactions(selectedStand);
+        } else {
+            setTransactions([]);
+        }
+    }, [selectedStand]);
 
     const fetchStands = async () => {
         try {
@@ -36,6 +58,38 @@ export default function StatementsPage() {
             toast.error("Failed to load stands");
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchTransactions = async (standId: string) => {
+        try {
+            setLoadingTx(true);
+            const standData = stands.find(s => s.id === standId);
+
+            let url: string;
+            if (standData?.isStandalone && standData?.standInventoryId) {
+                // Standalone stand: query by stand_inventory_id
+                url = `/api/transactions?standInventoryId=${standData.standInventoryId}`;
+                console.log(`[Statements] Fetching standalone transactions: standInventoryId=${standData.standInventoryId}`);
+            } else {
+                // Linked stand: query by development_stands.id
+                url = `/api/transactions?standId=${standId}`;
+                console.log(`[Statements] Fetching linked transactions: standId=${standId}`);
+            }
+
+            const res = await fetch(url);
+            if (!res.ok) {
+                const errData = await res.json();
+                throw new Error(errData.error || "Failed to fetch transactions");
+            }
+            const data = await res.json();
+            console.log(`[Statements] Received ${data.transactions?.length || 0} transactions`);
+            setTransactions(data.transactions || []);
+        } catch (err) {
+            console.error("[Statements] Error fetching transactions:", err);
+            toast.error("Failed to load transactions");
+        } finally {
+            setLoadingTx(false);
         }
     };
 
@@ -81,11 +135,24 @@ export default function StatementsPage() {
                                     value={selectedStand || ""}
                                 >
                                     <option value="">Select a stand...</option>
-                                    {stands.map((stand) => (
-                                        <option key={stand.id} value={stand.id}>
-                                            {stand.standNumber} - {stand.developmentName}
-                                        </option>
-                                    ))}
+                                    {stands.filter(s => !s.isStandalone).length > 0 && (
+                                        <optgroup label="Linked Stands">
+                                            {stands.filter(s => !s.isStandalone).map((stand) => (
+                                                <option key={stand.id} value={stand.id}>
+                                                    {stand.standNumber} - {stand.developmentName}
+                                                </option>
+                                            ))}
+                                        </optgroup>
+                                    )}
+                                    {stands.filter(s => s.isStandalone).length > 0 && (
+                                        <optgroup label="Unassigned Stands (no development yet)">
+                                            {stands.filter(s => s.isStandalone).map((stand) => (
+                                                <option key={stand.id} value={stand.id}>
+                                                    Stand {stand.standNumber} — Unassigned
+                                                </option>
+                                            ))}
+                                        </optgroup>
+                                    )}
                                 </select>
                             </div>
 
@@ -104,6 +171,11 @@ export default function StatementsPage() {
                         <Card>
                             <CardContent className="pt-6">
                                 <div className="space-y-4">
+                                    {standData.isStandalone && (
+                                        <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+                                            ⚠ Unassigned stand — no development or client linked yet
+                                        </div>
+                                    )}
                                     <div>
                                         <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Client Information</p>
                                         <p className="font-semibold text-lg">{standData.clientName || "N/A"}</p>
@@ -148,6 +220,11 @@ export default function StatementsPage() {
                                         <div>
                                             <h2 className="text-2xl font-bold uppercase tracking-tight text-slate-900 font-sans">Statement of Account</h2>
                                             <p className="text-sm text-slate-500 mt-1">Generated: {new Date().toLocaleDateString()}</p>
+                                            {standData.isStandalone && (
+                                                <span className="inline-block mt-2 text-xs bg-amber-100 text-amber-700 border border-amber-200 rounded px-2 py-0.5">
+                                                    Unassigned Stand
+                                                </span>
+                                            )}
                                         </div>
                                         <div className="text-right">
                                             <p className="font-bold">StandInv Platform</p>
@@ -160,13 +237,13 @@ export default function StatementsPage() {
                                         <div className="grid grid-cols-2 gap-8">
                                             <div>
                                                 <p className="text-xs font-bold text-slate-400 uppercase mb-1">To</p>
-                                                <p className="font-semibold">{standData.clientName || "Client"}</p>
+                                                <p className="font-semibold">{standData.clientName || "Client (Unassigned)"}</p>
                                                 <p className="text-sm text-slate-500">Zimbabwe</p>
                                             </div>
                                             <div className="text-right">
                                                 <p className="text-xs font-bold text-slate-400 uppercase mb-1">Details</p>
                                                 <p className="text-sm"><span className="font-medium">Stand Number:</span> {standData.standNumber}</p>
-                                                <p className="text-sm"><span className="font-medium">Development:</span> {standData.developmentName}</p>
+                                                <p className="text-sm"><span className="font-medium">Development:</span> {standData.developmentName || "Unassigned"}</p>
                                             </div>
                                         </div>
 
@@ -175,15 +252,42 @@ export default function StatementsPage() {
                                                 <tr>
                                                     <th className="py-2 text-left">Date</th>
                                                     <th className="py-2 text-left">Description</th>
+                                                    <th className="py-2 text-left">Category</th>
                                                     <th className="py-2 text-right">Debit</th>
                                                     <th className="py-2 text-right">Credit</th>
                                                     <th className="py-2 text-right">Balance</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                <tr className="border-b">
-                                                    <td className="py-3 text-slate-400 italic" colSpan={5}>No transactions recorded</td>
-                                                </tr>
+                                                {loadingTx ? (
+                                                    <tr className="border-b">
+                                                        <td className="py-3 text-slate-400 italic" colSpan={6}>
+                                                            <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+                                                            Loading transactions...
+                                                        </td>
+                                                    </tr>
+                                                ) : transactions.length === 0 ? (
+                                                    <tr className="border-b">
+                                                        <td className="py-3 text-slate-400 italic" colSpan={6}>No transactions recorded</td>
+                                                    </tr>
+                                                ) : (
+                                                    transactions.map((tx, idx) => {
+                                                        const isCredit = tx.side === 'RECEIPT' || tx.amount > 0;
+                                                        const runningBalance = transactions
+                                                            .slice(0, idx + 1)
+                                                            .reduce((sum, t) => sum + (t.side === 'RECEIPT' ? t.amount : -t.amount), 0);
+                                                        return (
+                                                            <tr key={tx.id} className="border-b">
+                                                                <td className="py-2">{new Date(tx.date).toLocaleDateString()}</td>
+                                                                <td className="py-2">{tx.description}</td>
+                                                                <td className="py-2 text-xs text-slate-500">{tx.category?.replace(/_/g, ' ')}</td>
+                                                                <td className="py-2 text-right">{!isCredit ? `$${Math.abs(tx.amount).toLocaleString()}` : ''}</td>
+                                                                <td className="py-2 text-right">{isCredit ? `$${tx.amount.toLocaleString()}` : ''}</td>
+                                                                <td className="py-2 text-right">${runningBalance.toLocaleString()}</td>
+                                                            </tr>
+                                                        );
+                                                    })
+                                                )}
                                             </tbody>
                                         </table>
                                     </div>

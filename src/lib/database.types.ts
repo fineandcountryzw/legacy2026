@@ -265,12 +265,16 @@ export interface Database {
           id: string
           user_id: string
           upload_id: string | null
-          development_id: string
+          development_id: string | null
           stand_id: string | null
+          stand_inventory_id: string | null
           transaction_date: string
           amount: number
           reference: string | null
           description: string | null
+          category: string | null
+          side: string | null
+          sheet_name: string | null
           status: string
           source_row_index: number | null
           idempotency_key: string | null
@@ -280,12 +284,16 @@ export interface Database {
           id?: string
           user_id: string
           upload_id?: string | null
-          development_id: string
+          development_id?: string | null
           stand_id?: string | null
+          stand_inventory_id?: string | null
           transaction_date: string
           amount: number
           reference?: string | null
           description?: string | null
+          category?: string | null
+          side?: string | null
+          sheet_name?: string | null
           status?: string
           source_row_index?: number | null
           idempotency_key?: string | null
@@ -295,12 +303,16 @@ export interface Database {
           id?: string
           user_id?: string
           upload_id?: string | null
-          development_id?: string
+          development_id?: string | null
           stand_id?: string | null
+          stand_inventory_id?: string | null
           transaction_date?: string
           amount?: number
           reference?: string | null
           description?: string | null
+          category?: string | null
+          side?: string | null
+          sheet_name?: string | null
           status?: string
           source_row_index?: number | null
           idempotency_key?: string | null

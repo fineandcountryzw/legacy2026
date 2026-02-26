@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const { userId } = await auth();
-    
+
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -30,25 +30,25 @@ export async function POST(request: NextRequest) {
       supabase = await createClient();
     } catch (err) {
       console.error("Failed to create Supabase client:", err);
-      return NextResponse.json({ 
-        error: "Database configuration error", 
+      return NextResponse.json({
+        error: "Database configuration error",
         details: err instanceof Error ? err.message : "Unknown error"
       }, { status: 500 });
     }
 
     const { fileData, filename, developmentId } = await request.json();
-    
+
     // Parse the file data (base64 to ArrayBuffer)
     const buffer = Buffer.from(fileData, 'base64');
     const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-    
+
     // Parse the ledger
-    const result = parseLedgerFile(arrayBuffer, filename);
-    
+    const result = parseLedgerFile(arrayBuffer as ArrayBuffer, filename);
+
     if (result.metadata.totalStands === 0) {
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: "No stands found in file",
-        summary: importSummary 
+        summary: importSummary
       }, { status: 400 });
     }
 
@@ -78,14 +78,14 @@ export async function POST(request: NextRequest) {
     // 2. Process each estate and stand
     for (const estate of result.estates) {
       importSummary.estatesProcessed++;
-      
+
       for (const stand of estate.stands) {
         try {
-          // Create or get stand inventory
-          const standKey = developmentId 
+          // Create or get stand inventory (always - even without a development)
+          const standKey = developmentId
             ? `${developmentId}:${stand.standNumber}`
             : `${estate.sheetName}:${stand.standNumber}`;
-          
+
           const { data: standInv, error: standError } = await supabase
             .from("stand_inventory")
             .upsert({
@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
             importSummary.errors.push(`Stand ${stand.standNumber}: ${standError.message}`);
             continue;
           }
-          
+
           if (!standInv) {
             console.error(`No stand inventory returned for ${stand.standNumber}`);
             importSummary.errors.push(`Stand ${stand.standNumber}: Failed to create stand inventory`);
@@ -129,30 +129,46 @@ export async function POST(request: NextRequest) {
 
           importSummary.standsCreated++;
 
-          // 3. Create payment transactions and track all categories
+          // 3. Create payment transactions for ALL categories
+          console.log(`[Import] Inserting ${stand.transactions.length} transactions for stand ${stand.standNumber}`);
+
           for (const tx of stand.transactions) {
-            const idempotencyKey = `${upload.id}-${stand.standNumber}-${tx.rawRowIndex}`;
-            
+            // Idempotency key includes sheetName to avoid cross-sheet collisions
+            const idempotencyKey = `${upload.id}-${tx.sheetName}-${stand.standNumber}-${tx.rawRowIndex}`;
+
+            console.log(`[Import] TX: [${tx.side}] ${tx.category} - ${tx.description?.substring(0, 30)}... $${tx.amount}`);
+
             const { error: txError } = await supabase
               .from("payment_transactions")
               .upsert({
                 user_id: userId,
                 upload_id: upload.id,
+                // development_id is now nullable — only set when development is selected
                 development_id: developmentId || null,
+                // stand_id = development_stands.id (only when development is linked)
                 stand_id: devStandId,
+                // stand_inventory_id = direct link for standalone imports
+                stand_inventory_id: standInv.id,
                 transaction_date: tx.date,
                 amount: tx.amount,
                 reference: tx.reference,
                 description: `[${tx.sheetName}] ${tx.description}`,
+                category: tx.category,
+                side: tx.side,
+                sheet_name: tx.sheetName,
                 status: devStandId ? "Matched" : "Unmatched",
                 source_row_index: tx.rawRowIndex,
                 idempotency_key: idempotencyKey
-              }, { onConflict: "idempotency_key" });
+              }, { onConflict: "idempotency_key" })
+              .select('id');
 
-            if (!txError) {
+            if (txError) {
+              console.error(`[Import] TX INSERT ERROR:`, txError);
+              importSummary.errors.push(`TX ${tx.rawRowIndex}: ${txError.message}`);
+            } else {
               importSummary.transactionsCreated++;
-              
-              // Track all category totals properly
+
+              // Track category totals
               if (tx.category === 'CLIENT_DEPOSIT' || tx.category === 'CLIENT_INSTALLMENT') {
                 importSummary.clientPaymentsTotal += tx.amount;
               } else if (tx.category === 'DEVELOPER_PAYMENT') {
@@ -177,7 +193,7 @@ export async function POST(request: NextRequest) {
     await supabase
       .from("uploads")
       .update({
-        status: importSummary.errors.length > 0 ? "Completed" : "Completed",
+        status: "Completed",
         completed_at: new Date().toISOString()
       })
       .eq("id", upload.id);
@@ -189,10 +205,13 @@ export async function POST(request: NextRequest) {
     importSummary.fcFeesTotal = Math.round(importSummary.fcFeesTotal * 100) / 100;
     importSummary.realtorPaymentsTotal = Math.round(importSummary.realtorPaymentsTotal * 100) / 100;
 
+    console.log(`[Import] COMPLETE: ${importSummary.transactionsCreated} transactions, ${importSummary.errors.length} errors`);
+
+    const hasErrors = importSummary.errors.length > 0;
     return NextResponse.json({
-      success: true,
+      success: !hasErrors,
       summary: importSummary
-    });
+    }, { status: hasErrors ? 207 : 200 });
 
   } catch (error) {
     console.error("Import error:", error);
