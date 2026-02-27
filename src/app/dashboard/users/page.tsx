@@ -44,24 +44,30 @@ interface OrgUser {
   email: string;
   firstName: string;
   lastName: string;
-  role: "admin" | "finance" | "agent" | "auditor";
+  role: "ADMIN" | "MANAGER" | "ACCOUNTANT" | "VIEWER" | "AGENT" | "FINANCE" | "AUDITOR";
   status: "active" | "inactive" | "pending";
   lastActiveAt: string | null;
   createdAt: string;
 }
 
 const roleLabels: Record<string, string> = {
-  admin: "Administrator",
-  finance: "Finance",
-  agent: "Agent/Support",
-  auditor: "Auditor",
+  ADMIN: "Administrator",
+  MANAGER: "Manager",
+  ACCOUNTANT: "Accountant",
+  VIEWER: "Viewer",
+  AGENT: "Agent/Support",
+  FINANCE: "Finance",
+  AUDITOR: "Auditor",
 };
 
 const roleColors: Record<string, string> = {
-  admin: "bg-purple-100 text-purple-800",
-  finance: "bg-blue-100 text-blue-800",
-  agent: "bg-green-100 text-green-800",
-  auditor: "bg-orange-100 text-orange-800",
+  ADMIN: "bg-purple-100 text-purple-800",
+  MANAGER: "bg-indigo-100 text-indigo-800",
+  ACCOUNTANT: "bg-cyan-100 text-cyan-800",
+  VIEWER: "bg-gray-100 text-gray-800",
+  AGENT: "bg-green-100 text-green-800",
+  FINANCE: "bg-blue-100 text-blue-800",
+  AUDITOR: "bg-orange-100 text-orange-800",
 };
 
 export default function UsersPage() {
@@ -79,11 +85,25 @@ export default function UsersPage() {
     try {
       setLoading(true);
       const res = await fetch("/api/users");
-      if (!res.ok) throw new Error("Failed to fetch users");
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.message || "Failed to fetch users");
+      }
       const data = await res.json();
-      setUsers(data.users || []);
-    } catch (err) {
-      toast.error("Failed to load users");
+      // Map API response to OrgUser format
+      const mappedUsers: OrgUser[] = (data.users || []).map((u: any) => ({
+        id: u.id,
+        email: u.email,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        role: u.role,
+        status: u.isActive ? "active" : "inactive",
+        lastActiveAt: u.lastLoginAt || null,
+        createdAt: u.createdAt,
+      }));
+      setUsers(mappedUsers);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to load users");
     } finally {
       setLoading(false);
     }
@@ -249,17 +269,26 @@ export default function UsersPage() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "admin")}>
+            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "ADMIN")}>
               Set as Admin
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "finance")}>
+            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "MANAGER")}>
+              Set as Manager
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "FINANCE")}>
               Set as Finance
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "agent")}>
+            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "ACCOUNTANT")}>
+              Set as Accountant
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "AGENT")}>
               Set as Agent
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "auditor")}>
+            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "AUDITOR")}>
               Set as Auditor
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleUpdateRole(user.id, "VIEWER")}>
+              Set as Viewer
             </DropdownMenuItem>
             <DropdownMenuItem 
               onClick={() => handleToggleStatus(user.id, user.status)}
@@ -325,10 +354,13 @@ export default function UsersPage() {
                     <SelectValue placeholder="Select role" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="admin">Administrator</SelectItem>
-                    <SelectItem value="finance">Finance</SelectItem>
-                    <SelectItem value="agent">Agent/Support</SelectItem>
-                    <SelectItem value="auditor">Auditor</SelectItem>
+                    <SelectItem value="ADMIN">Administrator</SelectItem>
+                    <SelectItem value="MANAGER">Manager</SelectItem>
+                    <SelectItem value="FINANCE">Finance</SelectItem>
+                    <SelectItem value="ACCOUNTANT">Accountant</SelectItem>
+                    <SelectItem value="AGENT">Agent/Support</SelectItem>
+                    <SelectItem value="AUDITOR">Auditor</SelectItem>
+                    <SelectItem value="VIEWER">Viewer</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -397,8 +429,16 @@ export default function UsersPage() {
               <p className="text-slate-500">Full access to all features and settings</p>
             </div>
             <div>
+              <Badge className="mb-2 bg-indigo-100 text-indigo-800">Manager</Badge>
+              <p className="text-slate-500">Manage estates, payouts, and transactions</p>
+            </div>
+            <div>
               <Badge className="mb-2 bg-blue-100 text-blue-800">Finance</Badge>
               <p className="text-slate-500">Receipts, reconciliation, statements, reports</p>
+            </div>
+            <div>
+              <Badge className="mb-2 bg-cyan-100 text-cyan-800">Accountant</Badge>
+              <p className="text-slate-500">Record payments and manage deductions</p>
             </div>
             <div>
               <Badge className="mb-2 bg-green-100 text-green-800">Agent/Support</Badge>
@@ -407,6 +447,10 @@ export default function UsersPage() {
             <div>
               <Badge className="mb-2 bg-orange-100 text-orange-800">Auditor</Badge>
               <p className="text-slate-500">Read-only access + audit logs</p>
+            </div>
+            <div>
+              <Badge className="mb-2 bg-gray-100 text-gray-800">Viewer</Badge>
+              <p className="text-slate-500">Basic read-only access</p>
             </div>
           </div>
         </CardContent>

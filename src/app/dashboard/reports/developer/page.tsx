@@ -80,6 +80,7 @@ export default function DeveloperReportPage() {
     ]
 
     const summaryData = reportData?.summary || []
+    const totals = reportData?.totals || {}
 
     if (loading) {
         return (
@@ -165,15 +166,15 @@ export default function DeveloperReportPage() {
                                             <div className="space-y-2">
                                                 <div className="flex justify-between text-sm">
                                                     <span>Total Commissions</span>
-                                                    <Money amount={reportData?.fcCommissions || 0} />
+                                                    <Money amount={totals.fcCommission || 0} />
                                                 </div>
                                                 <div className="flex justify-between text-sm">
                                                     <span>Admin Fees</span>
-                                                    <Money amount={reportData?.fcAdminFees || 0} />
+                                                    <Money amount={totals.fcAdminFees || 0} />
                                                 </div>
                                                 <div className="flex justify-between font-bold border-t pt-2 text-blue-600">
                                                     <span>Total Retain</span>
-                                                    <Money amount={reportData?.fcRetain || 0} />
+                                                    <Money amount={totals.fcRetain || 0} />
                                                 </div>
                                             </div>
                                         </div>
@@ -182,15 +183,21 @@ export default function DeveloperReportPage() {
                                             <div className="space-y-2">
                                                 <div className="flex justify-between text-sm">
                                                     <span>Gross Sales Revenue</span>
-                                                    <Money amount={reportData?.grossRevenue || 0} />
+                                                    <Money amount={totals.totalReceived || 0} />
                                                 </div>
                                                 <div className="flex justify-between text-sm">
                                                     <span>Less F&C Retain</span>
-                                                    <Money amount={reportData?.fcRetain || 0} className="text-red-500" />
+                                                    <Money amount={totals.fcRetain || 0} className="text-red-500" />
                                                 </div>
+                                                {totals.legalFees > 0 && (
+                                                    <div className="flex justify-between text-sm text-emerald-600">
+                                                        <span>Add: Legal Fees (to Dev)</span>
+                                                        <Money amount={totals.legalFees} />
+                                                    </div>
+                                                )}
                                                 <div className="flex justify-between font-bold border-t pt-2 text-emerald-600">
                                                     <span>Net Payable</span>
-                                                    <Money amount={reportData?.netPayable || 0} />
+                                                    <Money amount={totals.netPayable || 0} />
                                                 </div>
                                             </div>
                                         </div>
@@ -218,12 +225,25 @@ export default function DeveloperReportPage() {
 
                         <Card className="bg-blue-600 text-white border-none">
                             <CardContent className="p-6 space-y-4">
-                                <h3 className="font-bold">Next Payout</h3>
-                                <div>
-                                    <p className="text-xs text-blue-100 opacity-80 font-medium">Next scheduled settlement:</p>
-                                    <p className="text-xl font-bold">{reportData?.nextPayoutDate || "TBD"}</p>
+                                <h3 className="font-bold">Payout Status</h3>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-blue-100">Total Paid:</span>
+                                        <span className="font-medium">{reportData?.payouts?.totalPaid?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) || '$0.00'}</span>
+                                    </div>
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-blue-100">Pending:</span>
+                                        <span className="font-medium">{reportData?.payouts?.pendingAmount?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) || '$0.00'}</span>
+                                    </div>
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-blue-100">Approved:</span>
+                                        <span className="font-medium">{reportData?.payouts?.approvedAmount?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) || '$0.00'}</span>
+                                    </div>
                                 </div>
-                                <Button variant="secondary" className="w-full text-blue-600">Request Advance</Button>
+                                <div className="border-t border-blue-500 pt-3">
+                                    <p className="text-xs text-blue-100 opacity-80 font-medium">Net Available:</p>
+                                    <p className="text-xl font-bold">{totals.netPayable?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) || '$0.00'}</p>
+                                </div>
                             </CardContent>
                         </Card>
                     </div>

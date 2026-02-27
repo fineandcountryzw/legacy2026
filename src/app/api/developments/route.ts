@@ -37,43 +37,73 @@ export async function GET() {
       WHERE development_id = ANY(${developmentIds})
     `;
 
-    // 3. Transform to match frontend types
-    const transformed = developments.map((dev: any) => ({
-      id: dev.id,
-      name: dev.name,
-      code: dev.code,
-      currency: dev.currency,
-      developerName: dev.developer_name,
-      developerContacts: dev.developer_contacts,
-      commissionFixed: dev.commission_rate,
-      totalStands: 0, // Computed in frontend or other routes
-      soldStands: 0,
-      availableStands: 0,
-      totalReceived: 0,
-      developerPayable: 0,
-      fineCountryRetain: 0,
-      standTypes: standTypes
-        .filter((st: any) => st.development_id === dev.id)
-        .map((st: any) => ({
-          id: st.id,
-          label: st.label,
-          sizeSqm: st.size_sqm,
-          basePrice: st.base_price,
-          isActive: st.is_active,
-        })) || [],
-      costs: costItems
-        .filter((c: any) => c.development_id === dev.id)
-        .map((c: any) => ({
-          id: c.id,
-          name: c.name,
-          type: c.cost_type,
-          value: c.value,
-          appliesTo: c.applies_to,
-          payTo: c.pay_to,
-          isVariable: c.is_variable,
-          isActive: c.is_active,
-        })) || [],
-    }));
+    // 3. Fetch stands with their payment totals
+    const standsData = await sql`
+      SELECT 
+        ds.development_id,
+        ds.id as stand_id,
+        ds.status,
+        COALESCE(SUM(pt.amount), 0) as total_received
+      FROM development_stands ds
+      LEFT JOIN payment_transactions pt ON ds.id = pt.stand_id
+      WHERE ds.development_id = ANY(${developmentIds})
+      GROUP BY ds.development_id, ds.id, ds.status
+    `;
+
+    // 4. Transform to match frontend types
+    const transformed = developments.map((dev: any) => {
+      // Get stands for this development
+      const devStands = standsData.filter((s: any) => s.development_id === dev.id);
+      
+      // Calculate totals
+      const totalStands = devStands.length;
+      const soldStands = devStands.filter((s: any) => s.status === 'Sold').length;
+      const availableStands = devStands.filter((s: any) => s.status === 'Available').length;
+      const totalReceived = devStands.reduce((sum: number, s: any) => sum + parseFloat(s.total_received || 0), 0);
+      
+      // Calculate developer payable (totalReceived - commission)
+      const commissionRate = parseFloat(dev.commission_rate || 0);
+      const commissionAmount = Math.min(commissionRate, totalReceived); // Don't exceed total received
+      const developerPayable = Math.max(0, totalReceived - commissionAmount);
+      const fineCountryRetain = commissionAmount;
+
+      return {
+        id: dev.id,
+        name: dev.name,
+        code: dev.code,
+        currency: dev.currency,
+        developerName: dev.developer_name,
+        developerContacts: dev.developer_contacts,
+        commissionFixed: dev.commission_rate,
+        totalStands,
+        soldStands,
+        availableStands,
+        totalReceived,
+        developerPayable,
+        fineCountryRetain,
+        standTypes: standTypes
+          .filter((st: any) => st.development_id === dev.id)
+          .map((st: any) => ({
+            id: st.id,
+            label: st.label,
+            sizeSqm: st.size_sqm,
+            basePrice: st.base_price,
+            isActive: st.is_active,
+          })) || [],
+        costs: costItems
+          .filter((c: any) => c.development_id === dev.id)
+          .map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            type: c.cost_type,
+            value: c.value,
+            appliesTo: c.applies_to,
+            payTo: c.pay_to,
+            isVariable: c.is_variable,
+            isActive: c.is_active,
+          })) || [],
+      };
+    });
 
     return NextResponse.json(transformed);
 

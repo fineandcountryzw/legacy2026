@@ -8,11 +8,25 @@ const isPublicRoute = createRouteMatcher([
   '/api/webhook(.*)'
 ]);
 
+// Routes that should redirect to dashboard if already authenticated
+const isAuthRoute = createRouteMatcher([
+  '/sign-in(.*)',
+  '/sign-up(.*)',
+  '/'
+]);
+
 export default clerkMiddleware(async (auth, request) => {
+  const authObj = await auth();
+  const { userId } = authObj;
+  
+  // If user is authenticated and trying to access auth routes, redirect to dashboard
+  if (userId && isAuthRoute(request)) {
+    return Response.redirect(new URL('/dashboard', request.url));
+  }
+  
   // Protect non-public routes with Clerk
   if (!isPublicRoute(request)) {
-    const authObj = await auth();
-    if (!authObj.userId) {
+    if (!userId) {
       return authObj.redirectToSignIn();
     }
   }

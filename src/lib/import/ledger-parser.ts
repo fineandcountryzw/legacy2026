@@ -332,8 +332,8 @@ function categorizeDeductible(description: string): { category: DeductibleCatego
     };
   }
   
-  // LEGAL FEE (on right side = deductible)
-  if (desc.includes('legal') && desc.includes('fee')) {
+  // LEGAL FEE (on right side = deductible) - check before developer
+  if (desc.includes('legal') || desc.includes('lawyer') || desc.includes('attorney')) {
     return { 
       category: 'DEDUCTION_LEGAL_FEE', 
       type: 'LEGAL_FEE', 

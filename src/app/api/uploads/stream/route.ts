@@ -112,8 +112,9 @@ function categorizePayment(description: string): string {
   if (desc.includes('commission') && desc.includes('f&c')) return 'FC_COMMISSION';
   if (desc.includes('administration') && desc.includes('f&c')) return 'FC_ADMIN_FEE';
   if (desc.includes('realtor')) return 'REALTOR_PAYMENT';
+  // Check for legal BEFORE developer - descriptions like "Legal fees Lakecity" should be LEGAL_FEE
+  if (desc.includes('legal') || desc.includes('lawyer') || desc.includes('attorney')) return 'LEGAL_FEE';
   if (desc.includes('developers') || desc.includes('lakecity') || desc.includes('highrange') || desc.includes('southlands') || desc.includes('lomlight')) return 'DEVELOPER_PAYMENT';
-  if (desc.includes('legal')) return 'LEGAL_FEE';
   if (desc.includes('aos')) return 'AOS_FEE';
   return 'UNKNOWN';
 }
@@ -343,6 +344,69 @@ export async function POST(request: NextRequest) {
           other: payments.filter(t => t.category === 'DEVELOPER_PAYMENT' && !['LAKECITY', 'HIGHRANGE', 'SOUTHLANDS', 'LOMLIGHT'].includes(t.developerName || '')).reduce((sum, t) => sum + t.amount, 0),
         };
 
+        // Build detailed stand summaries
+        const estateStands = new Map<string, any[]>();
+        
+        for (const [key, transactions] of grouped) {
+          const [sheetName, standNumber] = key.split('-');
+          const agentCode = transactions[0]?.agentCode || '';
+          
+          const standReceipts = transactions.filter((t: any) => t.side === 'RECEIPT');
+          const standPayments = transactions.filter((t: any) => t.side === 'PAYMENT');
+          
+          const standDeposits = standReceipts.filter((t: any) => t.category === 'CLIENT_DEPOSIT').reduce((sum: number, t: any) => sum + t.amount, 0);
+          const standInstallments = standReceipts.filter((t: any) => t.category === 'CLIENT_INSTALLMENT').reduce((sum: number, t: any) => sum + t.amount, 0);
+          const standTotalReceipts = standReceipts.reduce((sum: number, t: any) => sum + t.amount, 0);
+          
+          const standFcCommissions = standPayments.filter((t: any) => t.category === 'FC_COMMISSION').reduce((sum: number, t: any) => sum + t.amount, 0);
+          const standFcAdminFees = standPayments.filter((t: any) => t.category === 'FC_ADMIN_FEE').reduce((sum: number, t: any) => sum + t.amount, 0);
+          const standLegalFees = standPayments.filter((t: any) => t.category === 'LEGAL_FEE').reduce((sum: number, t: any) => sum + t.amount, 0);
+          const standAosFees = standPayments.filter((t: any) => t.category === 'AOS_FEE').reduce((sum: number, t: any) => sum + t.amount, 0);
+          const standRealtor = standPayments.filter((t: any) => t.category === 'REALTOR_PAYMENT').reduce((sum: number, t: any) => sum + t.amount, 0);
+          
+          const standDeveloperPayments = {
+            lakecity: standPayments.filter((t: any) => t.developerName === 'LAKECITY').reduce((sum: number, t: any) => sum + t.amount, 0),
+            highrange: standPayments.filter((t: any) => t.developerName === 'HIGHRANGE').reduce((sum: number, t: any) => sum + t.amount, 0),
+            southlands: standPayments.filter((t: any) => t.developerName === 'SOUTHLANDS').reduce((sum: number, t: any) => sum + t.amount, 0),
+            lomlight: standPayments.filter((t: any) => t.developerName === 'LOMLIGHT').reduce((sum: number, t: any) => sum + t.amount, 0),
+            other: standPayments.filter((t: any) => t.category === 'DEVELOPER_PAYMENT' && !['LAKECITY', 'HIGHRANGE', 'SOUTHLANDS', 'LOMLIGHT'].includes(t.developerName || '')).reduce((sum: number, t: any) => sum + t.amount, 0),
+          };
+          
+          const standTotalPayments = standPayments.reduce((sum: number, t: any) => sum + t.amount, 0);
+          
+          const standSummary = {
+            sheetName,
+            standNumber,
+            agentCode,
+            clientDeposits: Math.round(standDeposits * 100) / 100,
+            clientInstallments: Math.round(standInstallments * 100) / 100,
+            totalReceipts: Math.round(standTotalReceipts * 100) / 100,
+            fcCommissions: Math.round(standFcCommissions * 100) / 100,
+            fcAdminFees: Math.round(standFcAdminFees * 100) / 100,
+            developerPayments: {
+              lakecity: Math.round(standDeveloperPayments.lakecity * 100) / 100,
+              highrange: Math.round(standDeveloperPayments.highrange * 100) / 100,
+              southlands: Math.round(standDeveloperPayments.southlands * 100) / 100,
+              lomlight: Math.round(standDeveloperPayments.lomlight * 100) / 100,
+              other: Math.round(standDeveloperPayments.other * 100) / 100,
+            },
+            realtorPayments: Math.round(standRealtor * 100) / 100,
+            legalFees: Math.round(standLegalFees * 100) / 100,
+            aosFees: Math.round(standAosFees * 100) / 100,
+            totalPayments: Math.round(standTotalPayments * 100) / 100,
+            balanceCarriedDown: Math.round((standTotalReceipts - standTotalPayments) * 100) / 100,
+            transactions: transactions.map((t: any) => ({
+              ...t,
+              amount: Math.round(t.amount * 100) / 100
+            }))
+          };
+          
+          if (!estateStands.has(sheetName)) {
+            estateStands.set(sheetName, []);
+          }
+          estateStands.get(sheetName)!.push(standSummary);
+        }
+
         // Stage 5: Complete
         sendStage(controller, {
           stage: 'complete',
@@ -362,10 +426,9 @@ export async function POST(request: NextRequest) {
             totalTransactions: allTransactions.length,
             validationErrors: totalStandsDetected === 0 ? ['No stands detected. Check file format.'] : []
           },
-          estates: estates.map(e => ({
-            sheetName: e.sheetName,
-            stands: [], // Simplified for preview
-            transactionCount: e.transactions
+          estates: Array.from(estateStands.entries()).map(([sheetName, stands]) => ({
+            sheetName,
+            stands: stands.sort((a: any, b: any) => parseInt(a.standNumber) - parseInt(b.standNumber))
           })),
           grandTotals: {
             clientDeposits: Math.round(clientDeposits * 100) / 100,
@@ -386,7 +449,10 @@ export async function POST(request: NextRequest) {
             totalPayments: Math.round(totalPayments * 100) / 100,
             balanceCarriedDown: Math.round((totalReceipts - totalPayments) * 100) / 100
           },
-          allTransactions
+          allTransactions: allTransactions.map(t => ({
+            ...t,
+            amount: Math.round(t.amount * 100) / 100
+          }))
         };
 
         sendStage(controller, {

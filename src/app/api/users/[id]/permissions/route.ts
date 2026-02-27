@@ -1,15 +1,14 @@
 // =====================================================
-// Individual User API Routes
-// GET /api/users/:id - Get user details
-// PUT /api/users/:id - Update user
-// DELETE /api/users/:id - Delete (deactivate) user
+// User Permissions API Routes
+// GET /api/users/:id/permissions - Get user permissions
+// PUT /api/users/:id/permissions - Set user permissions
 // =====================================================
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auth, clerkClient } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
-import { getUserById, updateUser, deleteUser } from '@/lib/services/user-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { getUserById, setUserPermissions } from '@/lib/services/user-service';
+import { hasPermission, type Permission } from '@/lib/auth/rbac';
 
 function sql() {
   return getDb();
@@ -70,8 +69,8 @@ async function syncClerkUser(clerkUserId: string) {
 }
 
 /**
- * GET /api/users/:id
- * Get user details
+ * GET /api/users/:id/permissions
+ * Get user permissions (role-based + custom)
  */
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
@@ -86,32 +85,36 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const user = await syncClerkUser(userId);
     const userPermissions = user.permissions || [];
     
-    // Check permission (users can view their own profile, admins can view all)
+    // Check permission (users can view their own, admins can view all)
     const isOwnProfile = user.id === id;
-    if (!isOwnProfile && !hasPermission(user.role, userPermissions, 'MANAGE_USERS')) {
+    if (!isOwnProfile && !hasPermission(user.role, userPermissions, 'ASSIGN_PERMISSIONS')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
-    // Get user
+    // Get target user
     const targetUser = await getUserById(id);
     
     if (!targetUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
     
-    return NextResponse.json({ user: targetUser });
+    return NextResponse.json({
+      role: targetUser.role,
+      rolePermissions: getRolePermissions(targetUser.role),
+      customPermissions: targetUser.permissions,
+    });
   } catch (error) {
-    console.error('Error fetching user:', error);
+    console.error('Error fetching user permissions:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch user', message: (error as Error).message },
+      { error: 'Failed to fetch user permissions', message: (error as Error).message },
       { status: 500 }
     );
   }
 }
 
 /**
- * PUT /api/users/:id
- * Update user
+ * PUT /api/users/:id/permissions
+ * Set user custom permissions (replaces all)
  */
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
@@ -126,76 +129,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const user = await syncClerkUser(userId);
     const userPermissions = user.permissions || [];
     
-    // Check permission (users can update their own profile, admins can update all)
-    const isOwnProfile = user.id === id;
-    if (!isOwnProfile && !hasPermission(user.role, userPermissions, 'MANAGE_USERS')) {
+    // Check permission
+    if (!hasPermission(user.role, userPermissions, 'ASSIGN_PERMISSIONS')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
     // Parse body
     const body = await request.json();
     
-    // Get IP address
-    const ipAddress = request.headers.get('x-forwarded-for') || 
-                      request.headers.get('x-real-ip') || 
-                      'unknown';
-    
-    // Update user
-    const updatedUser = await updateUser(
-      id,
-      {
-        email: body.email,
-        firstName: body.firstName,
-        lastName: body.lastName,
-        role: body.role,
-        phone: body.phone,
-        isActive: body.status === 'active' || body.isActive === true,
-      },
-      user.id,
-      ipAddress
-    );
-    
-    return NextResponse.json({ user: updatedUser });
-  } catch (error) {
-    console.error('Error updating user:', error);
-    
-    if ((error as Error).message === 'User not found') {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-    
-    return NextResponse.json(
-      { error: 'Failed to update user', message: (error as Error).message },
-      { status: 500 }
-    );
-  }
-}
-
-/**
- * DELETE /api/users/:id
- * Delete (deactivate) user
- */
-export async function DELETE(request: NextRequest, { params }: RouteParams) {
-  try {
-    const { userId } = await auth();
-    const { id } = await params;
-    
-    if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    
-    // Sync Clerk user
-    const user = await syncClerkUser(userId);
-    const userPermissions = user.permissions || [];
-    
-    // Check permission
-    if (!hasPermission(user.role, userPermissions, 'MANAGE_USERS')) {
-      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
-    }
-    
-    // Prevent deleting self
-    if (user.id === id) {
+    // Validate permissions
+    if (!body.permissions || !Array.isArray(body.permissions)) {
       return NextResponse.json(
-        { error: 'Cannot delete your own account' },
+        { error: 'permissions must be an array' },
         { status: 400 }
       );
     }
@@ -205,21 +150,28 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
                       request.headers.get('x-real-ip') || 
                       'unknown';
     
-    // Delete user
-    await deleteUser(id, user.id, ipAddress);
+    // Set permissions
+    await setUserPermissions(id, body.permissions as Permission[], user.id, ipAddress);
     
-    return NextResponse.json({ message: 'User deactivated successfully' });
+    // Get updated user
+    const updatedUser = await getUserById(id);
+    
+    return NextResponse.json({ 
+      message: 'Permissions updated successfully',
+      permissions: updatedUser?.permissions || [],
+    });
   } catch (error) {
-    console.error('Error deleting user:', error);
-    
-    if ((error as Error).message === 'User not found') {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-    
+    console.error('Error updating user permissions:', error);
     return NextResponse.json(
-      { error: 'Failed to delete user', message: (error as Error).message },
+      { error: 'Failed to update user permissions', message: (error as Error).message },
       { status: 500 }
     );
   }
+}
+
+// Helper function to get role permissions (imported from rbac)
+function getRolePermissions(role: string): Permission[] {
+  const { ROLE_PERMISSIONS } = require('@/lib/auth/rbac');
+  return ROLE_PERMISSIONS[role] || [];
 }
 
