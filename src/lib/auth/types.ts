@@ -303,6 +303,41 @@ export interface TransferStandInput {
 }
 
 // ==========================================
+// Stand History Types
+// ==========================================
+
+export interface StandSummary {
+  id: string;
+  standNumber: string;
+  developmentName: string;
+  developmentId: string;
+  agentCode?: string;
+  clientName?: string;
+  clientPhone?: string;
+  clientEmail?: string;
+  salePrice?: number;
+  saleDate?: string;
+  paymentTerms?: string;
+  totalDeposits: number;
+  totalInstallments: number;
+  totalCustomerPayments: number;
+  totalDeductions: number;
+  balance: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StandHistory {
+  stand: StandSummary;
+  payments: CustomerPayment[];
+  deductions: Deduction[];
+  payouts: DeveloperPayout[];
+  transfers: StandTransfer[];
+  auditTrail: AuditLogEntry[];
+}
+
+// ==========================================
 // Reconciliation Types
 // ==========================================
 
