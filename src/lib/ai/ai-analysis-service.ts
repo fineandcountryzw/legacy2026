@@ -3,19 +3,25 @@
 // Lakecity Accounting Suite
 // =====================================================
 
-import Groq from 'groq';
+// Groq client - using any to avoid TypeScript issues with groq package
+let groqClient: any = null;
 
-// Initialize Groq client
-function getGroqClient(): Groq {
+function getGroqClient() {
+  if (groqClient) return groqClient;
+  
   const apiKey = process.env.GROQ_API_KEY;
   
   if (!apiKey) {
     throw new Error('GROQ_API_KEY is not configured. Please add it to your .env.local file.');
   }
   
-  return new Groq({
+  // Dynamic import to avoid issues
+  const { Groq } = require('groq');
+  groqClient = new Groq({
     apiKey,
   });
+  
+  return groqClient;
 }
 
 // =====================================================
