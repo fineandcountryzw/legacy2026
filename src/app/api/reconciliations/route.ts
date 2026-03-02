@@ -11,7 +11,7 @@ import {
   createReconciliation, 
   getReconciliations 
 } from '@/lib/services/reconciliation-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 
 function sql() {
   return getDb();
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
         ) as permissions
       FROM users u
       LEFT JOIN user_permissions up ON u.id = up.user_id
-      WHERE u.clerk_id = ${userId}
+      WHERE u.id = ${userId}
       GROUP BY u.id
     `;
     
@@ -47,11 +47,11 @@ export async function GET(request: NextRequest) {
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission - need MANAGE_RECONCILIATIONS or VIEW_REPORTS
-    if (!hasPermission(user.role, userPermissions, 'MANAGE_RECONCILIATIONS') &&
-        !hasPermission(user.role, userPermissions, 'VIEW_REPORTS')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'MANAGE_RECONCILIATIONS') &&
+        !hasPermission(user.role as UserRole, userPermissions, 'VIEW_REPORTS')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
         ) as permissions
       FROM users u
       LEFT JOIN user_permissions up ON u.id = up.user_id
-      WHERE u.clerk_id = ${userId}
+      WHERE u.id = ${userId}
       GROUP BY u.id
     `;
     
@@ -104,10 +104,10 @@ export async function POST(request: NextRequest) {
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission - need MANAGE_RECONCILIATIONS
-    if (!hasPermission(user.role, userPermissions, 'MANAGE_RECONCILIATIONS')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'MANAGE_RECONCILIATIONS')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     

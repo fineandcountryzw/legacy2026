@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getDb } from "@/lib/db";
 
+function sql() {
+  return getDb();
+}
+
 // GET /api/stands/[id] - Get stand details
 export async function GET(
   request: NextRequest,
@@ -15,7 +19,7 @@ export async function GET(
     }
 
     const { id: rawId } = await params;
-    const sql = getDb();
+    const db = getDb();
 
     let standWithDetails;
 
@@ -23,7 +27,7 @@ export async function GET(
       const inventoryId = rawId.replace("standalone-", "");
 
       // Fetch standalone stand details
-      const invResults = await sql`
+      const invResults = await db`
         SELECT id, stand_number, canonical_stand_key
         FROM stand_inventory
         WHERE id = ${inventoryId}
@@ -35,13 +39,13 @@ export async function GET(
       }
 
       // Get transactions for this standalone stand for THIS user
-      const transactions = await sql`
+      const transactions = await db`
         SELECT * FROM payment_transactions
         WHERE stand_inventory_id = ${standInv.id} AND user_id = ${userId} AND stand_id IS NULL
         ORDER BY transaction_date DESC
       `;
 
-      const totalPaid = transactions.reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+      const totalPaid = transactions.reduce((sum: number, t: any) => sum + parseFloat(t.amount || 0), 0);
 
       standWithDetails = {
         id: rawId,
@@ -61,7 +65,7 @@ export async function GET(
       };
     } else {
       // Fetch linked stand details
-      const standResults = await sql`
+      const standResults = await db`
         SELECT 
           ds.id, ds.agreed_price, ds.status, ds.client_name, ds.client_id,
           si.stand_number,
@@ -82,13 +86,13 @@ export async function GET(
       }
 
       // Get transactions for this stand
-      const transactions = await sql`
+      const transactions = await db`
         SELECT * FROM payment_transactions
         WHERE stand_id = ${stand.id}
         ORDER BY transaction_date DESC
       `;
 
-      const totalPaid = transactions.reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+      const totalPaid = transactions.reduce((sum: number, t: any) => sum + parseFloat(t.amount || 0), 0);
       // Use agreed_price if set, otherwise fall back to stand type base_price
       const standAgreedPrice = parseFloat(stand.agreed_price || 0);
       const standTypeBasePrice = parseFloat(stand.stand_type_base_price || 0);
@@ -144,10 +148,10 @@ export async function PATCH(
     }
 
     const body = await request.json();
-    const sql = getDb();
+    const db = getDb();
 
     // Verify ownership via development
-    const ownership = await sql`
+    const ownership = await db`
       SELECT ds.id FROM development_stands ds
       JOIN developments d ON ds.development_id = d.id
       WHERE ds.id = ${id} AND d.user_id = ${userId}
@@ -157,32 +161,9 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized or stand not found" }, { status: 404 });
     }
 
-    // Build dynamic update using sql template
-    const updates: any[] = [];
-
-    if (body.agreedPrice !== undefined) {
-      updates.push(sql`agreed_price = ${body.agreedPrice}`);
-    }
-    if (body.status !== undefined) {
-      updates.push(sql`status = ${body.status}`);
-    }
-    if (body.clientName !== undefined) {
-      updates.push(sql`client_name = ${body.clientName}`);
-    }
-    if (body.clientId !== undefined) {
-      updates.push(sql`client_id = ${body.clientId}`);
-    }
-    if (body.standTypeId !== undefined) {
-      updates.push(sql`stand_type_id = ${body.standTypeId}`);
-    }
-
-    if (updates.length === 0) {
-      return NextResponse.json({ error: "No fields to update" }, { status: 400 });
-    }
-
     // Simple update for client assignment (most common case)
-    if (body.clientName !== undefined && updates.length === 1) {
-      const results = await sql`
+    if (body.clientName !== undefined) {
+      const results = await db`
         UPDATE development_stands
         SET client_name = ${body.clientName}, updated_at = NOW()
         WHERE id = ${id}
@@ -193,23 +174,23 @@ export async function PATCH(
 
     // For multiple fields, update individually
     if (body.agreedPrice !== undefined) {
-      await sql`UPDATE development_stands SET agreed_price = ${body.agreedPrice} WHERE id = ${id}`;
+      await db`UPDATE development_stands SET agreed_price = ${body.agreedPrice} WHERE id = ${id}`;
     }
     if (body.status !== undefined) {
-      await sql`UPDATE development_stands SET status = ${body.status} WHERE id = ${id}`;
+      await db`UPDATE development_stands SET status = ${body.status} WHERE id = ${id}`;
     }
     if (body.clientName !== undefined) {
-      await sql`UPDATE development_stands SET client_name = ${body.clientName} WHERE id = ${id}`;
+      await db`UPDATE development_stands SET client_name = ${body.clientName} WHERE id = ${id}`;
     }
     if (body.clientId !== undefined) {
-      await sql`UPDATE development_stands SET client_id = ${body.clientId} WHERE id = ${id}`;
+      await db`UPDATE development_stands SET client_id = ${body.clientId} WHERE id = ${id}`;
     }
     if (body.standTypeId !== undefined) {
-      await sql`UPDATE development_stands SET stand_type_id = ${body.standTypeId} WHERE id = ${id}`;
+      await db`UPDATE development_stands SET stand_type_id = ${body.standTypeId} WHERE id = ${id}`;
     }
 
     // Return updated record
-    const results = await sql`SELECT * FROM development_stands WHERE id = ${id}`;
+    const results = await db`SELECT * FROM development_stands WHERE id = ${id}`;
     return NextResponse.json(results[0]);
 
   } catch (err) {
@@ -240,10 +221,10 @@ export async function PUT(
     }
 
     const body = await request.json();
-    const sql = getDb();
+    const db = getDb();
 
     // Verify ownership via development
-    const ownership = await sql`
+    const ownership = await db`
       SELECT ds.id FROM development_stands ds
       JOIN developments d ON ds.development_id = d.id
       WHERE ds.id = ${id} AND d.user_id = ${userId}
@@ -253,7 +234,7 @@ export async function PUT(
       return NextResponse.json({ error: "Unauthorized or stand not found" }, { status: 404 });
     }
 
-    const results = await sql`
+    const results = await db`
       UPDATE development_stands
       SET 
         agreed_price = ${body.agreedPrice},
@@ -288,14 +269,14 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const sql = getDb();
+    const db = getDb();
 
     if (id.startsWith("standalone-")) {
       return NextResponse.json({ error: "Cannot delete inventory-level stands." }, { status: 400 });
     }
 
     // Verify ownership 
-    const ownership = await sql`
+    const ownership = await db`
       SELECT ds.id FROM development_stands ds
       JOIN developments d ON ds.development_id = d.id
       WHERE ds.id = ${id} AND d.user_id = ${userId}
@@ -305,7 +286,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized or stand not found" }, { status: 404 });
     }
 
-    await sql`DELETE FROM development_stands WHERE id = ${id}`;
+    await db`DELETE FROM development_stands WHERE id = ${id}`;
 
     return NextResponse.json({ success: true });
 

@@ -1,15 +1,7 @@
-// =====================================================
-// Individual User API Routes
-// GET /api/users/:id - Get user details
-// PUT /api/users/:id - Update user
-// DELETE /api/users/:id - Delete (deactivate) user
-// =====================================================
-
-import { NextRequest, NextResponse } from 'next/server';
-import { auth, clerkClient } from '@clerk/nextjs/server';
-import { getDb } from '@/lib/db';
-import { getUserById, updateUser, deleteUser } from '@/lib/services/user-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
+import { getDb } from "@/lib/db";
+import { getUserById, updateUser, deleteUser } from "@/lib/services/user-service";
 
 function sql() {
   return getDb();
@@ -20,90 +12,34 @@ interface RouteParams {
 }
 
 /**
- * Sync Clerk user to local database
- */
-async function syncClerkUser(clerkUserId: string) {
-  try {
-    const existingUser = await sql()`
-      SELECT id, role, permissions FROM users WHERE clerk_id = ${clerkUserId}
-    `;
-    
-    if (existingUser.length > 0) {
-      return existingUser[0];
-    }
-    
-    const client = await clerkClient();
-    const clerkUser = await client.users.getUser(clerkUserId);
-    
-    const email = clerkUser.emailAddresses[0]?.emailAddress || 'unknown@example.com';
-    const firstName = clerkUser.firstName || '';
-    const lastName = clerkUser.lastName || '';
-    
-    const result = await sql()`
-      INSERT INTO users (
-        clerk_id,
-        email,
-        first_name,
-        last_name,
-        role,
-        is_active
-      ) VALUES (
-        ${clerkUserId},
-        ${email},
-        ${firstName},
-        ${lastName},
-        'ADMIN',
-        true
-      )
-      ON CONFLICT (email) DO UPDATE SET
-        clerk_id = ${clerkUserId},
-        first_name = ${firstName},
-        last_name = ${lastName}
-      RETURNING id, role, permissions
-    `;
-    
-    return result[0];
-  } catch (error) {
-    console.error('Error syncing Clerk user:', error);
-    throw error;
-  }
-}
-
-/**
  * GET /api/users/:id
- * Get user details
+ * Get user by ID
  */
-export async function GET(request: NextRequest, { params }: RouteParams) {
+export async function GET(
+  request: NextRequest,
+  { params }: RouteParams
+) {
   try {
     const { userId } = await auth();
-    const { id } = await params;
     
     if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     
-    // Sync Clerk user
-    const user = await syncClerkUser(userId);
-    const userPermissions = user.permissions || [];
+    const { id } = await params;
     
-    // Check permission (users can view their own profile, admins can view all)
-    const isOwnProfile = user.id === id;
-    if (!isOwnProfile && !hasPermission(user.role, userPermissions, 'MANAGE_USERS')) {
-      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
-    }
-    
-    // Get user
+    // Get the requested user
     const targetUser = await getUserById(id);
     
     if (!targetUser) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
     
     return NextResponse.json({ user: targetUser });
-  } catch (error) {
-    console.error('Error fetching user:', error);
+  } catch (err) {
+    console.error("Error in GET /api/users/[id]:", err);
     return NextResponse.json(
-      { error: 'Failed to fetch user', message: (error as Error).message },
+      { error: "Server error", details: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 }
     );
   }
@@ -113,58 +49,27 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
  * PUT /api/users/:id
  * Update user
  */
-export async function PUT(request: NextRequest, { params }: RouteParams) {
+export async function PUT(
+  request: NextRequest,
+  { params }: RouteParams
+) {
   try {
     const { userId } = await auth();
-    const { id } = await params;
     
     if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     
-    // Sync Clerk user
-    const user = await syncClerkUser(userId);
-    const userPermissions = user.permissions || [];
-    
-    // Check permission (users can update their own profile, admins can update all)
-    const isOwnProfile = user.id === id;
-    if (!isOwnProfile && !hasPermission(user.role, userPermissions, 'MANAGE_USERS')) {
-      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
-    }
-    
-    // Parse body
+    const { id } = await params;
     const body = await request.json();
     
-    // Get IP address
-    const ipAddress = request.headers.get('x-forwarded-for') || 
-                      request.headers.get('x-real-ip') || 
-                      'unknown';
-    
-    // Update user
-    const updatedUser = await updateUser(
-      id,
-      {
-        email: body.email,
-        firstName: body.firstName,
-        lastName: body.lastName,
-        role: body.role,
-        phone: body.phone,
-        isActive: body.status === 'active' || body.isActive === true,
-      },
-      user.id,
-      ipAddress
-    );
+    const updatedUser = await updateUser(id, body, userId);
     
     return NextResponse.json({ user: updatedUser });
-  } catch (error) {
-    console.error('Error updating user:', error);
-    
-    if ((error as Error).message === 'User not found') {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-    
+  } catch (err) {
+    console.error("Error in PUT /api/users/[id]:", err);
     return NextResponse.json(
-      { error: 'Failed to update user', message: (error as Error).message },
+      { error: "Server error", details: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 }
     );
   }
@@ -174,52 +79,27 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
  * DELETE /api/users/:id
  * Delete (deactivate) user
  */
-export async function DELETE(request: NextRequest, { params }: RouteParams) {
+export async function DELETE(
+  request: NextRequest,
+  { params }: RouteParams
+) {
   try {
     const { userId } = await auth();
-    const { id } = await params;
     
     if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     
-    // Sync Clerk user
-    const user = await syncClerkUser(userId);
-    const userPermissions = user.permissions || [];
+    const { id } = await params;
     
-    // Check permission
-    if (!hasPermission(user.role, userPermissions, 'MANAGE_USERS')) {
-      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
-    }
+    await deleteUser(id, userId);
     
-    // Prevent deleting self
-    if (user.id === id) {
-      return NextResponse.json(
-        { error: 'Cannot delete your own account' },
-        { status: 400 }
-      );
-    }
-    
-    // Get IP address
-    const ipAddress = request.headers.get('x-forwarded-for') || 
-                      request.headers.get('x-real-ip') || 
-                      'unknown';
-    
-    // Delete user
-    await deleteUser(id, user.id, ipAddress);
-    
-    return NextResponse.json({ message: 'User deactivated successfully' });
-  } catch (error) {
-    console.error('Error deleting user:', error);
-    
-    if ((error as Error).message === 'User not found') {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-    
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    console.error("Error in DELETE /api/users/[id]:", err);
     return NextResponse.json(
-      { error: 'Failed to delete user', message: (error as Error).message },
+      { error: "Server error", details: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 }
     );
   }
 }
-

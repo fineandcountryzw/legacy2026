@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
 import { importHistoricalStands, getImportTemplate } from '@/lib/services/historical-data-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 
 function sql() {
   return getDb();
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
         ) as permissions
       FROM users u
       LEFT JOIN user_permissions up ON u.id = up.user_id
-      WHERE u.clerk_id = ${userId}
+      WHERE u.id = ${userId}
       GROUP BY u.id
     `;
     
@@ -60,11 +60,11 @@ export async function POST(request: NextRequest) {
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission - need UPLOAD_LEDGER or MANAGE_ESTATES
-    if (!hasPermission(user.role, userPermissions, 'UPLOAD_LEDGER') &&
-        !hasPermission(user.role, userPermissions, 'MANAGE_ESTATES')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'UPLOAD_LEDGER') &&
+        !hasPermission(user.role as UserRole, userPermissions, 'MANAGE_ESTATES')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     

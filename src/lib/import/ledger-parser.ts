@@ -1,4 +1,72 @@
 import * as XLSX from 'xlsx';
+import { isGroqConfigured, categorizeTransaction, validateTransactions, type CategorizationResult, type ValidationError } from '@/lib/ai/ai-analysis-service';
+
+// ============================================================
+// EXTENDED TYPES FOR AI ENHANCEMENT
+// ============================================================
+
+export interface AICategorization {
+  originalCategory: string;
+  suggestedCategory: string;
+  confidence: number;
+  reasoning: string;
+}
+
+export interface AIValidationResult {
+  errors: ValidationError[];
+  summary: {
+    totalErrors: number;
+    totalWarnings: number;
+    totalInfo: number;
+  };
+}
+
+export interface LedgerParseResult {
+  metadata: {
+    filename: string;
+    parsedAt: string;
+    totalSheets: number;
+    totalStands: number;
+    totalTransactions: number;
+    validationErrors: string[];
+    warnings: string[];
+    aiAnalysis?: {
+      enabled: boolean;
+      uncategorizedCount: number;
+      validationIssues: number;
+    };
+  };
+  estates: EstateSummary[];
+  grandTotals: {
+    customerPayments: {
+      deposits: number;
+      installments: number;
+      adminFees: number;
+      legalFees: number;
+      total: number;
+    };
+    deductibles: {
+      commissions: number;
+      adminFees: number;
+      aosFees: number;
+      developerPayments: {
+        lakecity: number;
+        highrange: number;
+        southlands: number;
+        lomlight: number;
+        other: number;
+      };
+      realtorPayments: number;
+      legalFees: number;
+      total: number;
+    };
+    balance: number;
+  };
+  allTransactions: ParsedTransaction[];
+  // AI enhancement data
+  aiCategorizations?: AICategorization[];
+  aiValidation?: AIValidationResult;
+}
 
 // ============================================================
 // REFACTORED LAKECITY LEDGER PARSER
@@ -121,48 +189,8 @@ export interface EstateSummary {
   stands: StandSummary[];
 }
 
-export interface LedgerParseResult {
-  metadata: {
-    filename: string;
-    parsedAt: string;
-    totalSheets: number;
-    totalStands: number;
-    totalTransactions: number;
-    validationErrors: string[];
-    warnings: string[];
-  };
-  estates: EstateSummary[];
-  grandTotals: {
-    customerPayments: {
-      deposits: number;
-      installments: number;
-      adminFees: number;
-      legalFees: number;
-      total: number;
-    };
-    deductibles: {
-      commissions: number;
-      adminFees: number;
-      aosFees: number;
-      developerPayments: {
-        lakecity: number;
-        highrange: number;
-        southlands: number;
-        lomlight: number;
-        other: number;
-      };
-      realtorPayments: number;
-      legalFees: number;
-      total: number;
-    };
-    balance: number;
-  };
-  allTransactions: ParsedTransaction[];
-}
-
 // ============================================================
 // STAND DETECTION
-// ============================================================
 
 function detectStand(row: any[]): { standNumber: string; agentCode: string } | null {
   // Check column 1 (B) for stand header

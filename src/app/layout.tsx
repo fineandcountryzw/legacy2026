@@ -17,7 +17,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider>
+    <ClerkProvider
+      
+      afterSignOutUrl="/"
+      signInUrl="/sign-in"
+      signUpUrl="/sign-up"
+    >
       <html lang="en" className="bg-brand-light">
         <head>
           <link

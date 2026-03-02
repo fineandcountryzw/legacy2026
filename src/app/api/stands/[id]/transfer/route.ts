@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
 import { transferStand } from '@/lib/services/stand-lifecycle-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 
 function sql() {
   return getDb();
@@ -35,7 +35,7 @@ export async function POST(
         ) as permissions
       FROM users u
       LEFT JOIN user_permissions up ON u.id = up.user_id
-      WHERE u.clerk_id = ${userId}
+      WHERE u.id = ${userId}
       GROUP BY u.id
     `;
     
@@ -44,14 +44,14 @@ export async function POST(
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission - need TRANSFER_STAND
-    if (!hasPermission(user.role, userPermissions, 'TRANSFER_STAND')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'TRANSFER_STAND')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
-    // Parse request body
+    // Parse body
     const body = await request.json();
     
     // Validate required fields
@@ -74,16 +74,21 @@ export async function POST(
                       request.headers.get('x-real-ip') || 
                       'unknown';
     
-    // Transfer the stand
-    const result = await transferStand(standId, {
+    // Transfer the stand (note: standId is passed separately, not in input)
+    const result = await transferStand(
       standId,
-      newClientName: body.newClientName,
-      newClientPhone: body.newClientPhone,
-      newClientEmail: body.newClientEmail,
-      transferDate: body.transferDate,
-      transferFee: body.transferFee,
-      notes: body.notes,
-    }, user.id, ipAddress);
+      {
+        standId, // Include standId in input to satisfy type
+        newClientName: body.newClientName,
+        newClientPhone: body.newClientPhone,
+        newClientEmail: body.newClientEmail,
+        transferDate: body.transferDate,
+        transferFee: body.transferFee || 0,
+        notes: body.notes,
+      },
+      user.id,
+      ipAddress
+    );
     
     return NextResponse.json({
       success: true,

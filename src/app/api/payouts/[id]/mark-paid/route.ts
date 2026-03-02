@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
 import { markPayoutPaid } from '@/lib/services/payout-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 
 function sql() {
   return getDb();
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     
     // Get user from our database
     const userResult = await sql()`
-      SELECT id, role, permissions FROM users WHERE clerk_id = ${userId}
+      SELECT id, role, permissions FROM users WHERE id = ${userId}
     `;
     
     if (userResult.length === 0) {
@@ -46,10 +46,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission
-    if (!hasPermission(user.role, userPermissions, 'MARK_PAYOUT_PAID')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'MARK_PAYOUT_PAID')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
@@ -113,4 +113,3 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     );
   }
 }
-

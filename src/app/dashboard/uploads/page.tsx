@@ -10,7 +10,7 @@ import { UploadHistory } from "@/types";
 import {
   Eye, Loader2, AlertCircle, CheckCircle2, FileSpreadsheet,
   ChevronDown, ChevronUp, Download, Building2, Users, Receipt, Home,
-  TrendingUp, TrendingDown, Wallet, Database, X
+  TrendingUp, TrendingDown, Wallet, Database, X, Sparkles
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -139,6 +139,8 @@ export default function UploadsPage() {
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [selectedDevelopment, setSelectedDevelopment] = useState<string>(NO_DEVELOPMENT_VALUE);
   const [developments, setDevelopments] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState<any>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -384,6 +386,7 @@ export default function UploadsPage() {
     setSelectedDevelopment(NO_DEVELOPMENT_VALUE);
     setParseStages([]);
     setCurrentStage('');
+    setAiResult(null);
     toast.info("Upload cleared");
   };
 
@@ -410,6 +413,49 @@ export default function UploadsPage() {
       'LOMLIGHT': 'text-orange-600',
     };
     return colors[name || ''] || 'text-orange-600';
+  };
+
+  // AI Analysis function
+  const handleAiAnalyze = async () => {
+    if (!result || !result.allTransactions || result.allTransactions.length === 0) {
+      toast.error("No transactions to analyze");
+      return;
+    }
+
+    setAiLoading(true);
+    setAiResult(null);
+
+    try {
+      // Prepare transactions for AI analysis
+      const transactions = result.allTransactions.slice(0, 100).map((tx: ParsedTransaction, index: number) => ({
+        description: tx.description,
+        side: tx.side === 'RECEIPT' ? 'CUSTOMER_PAYMENT' as const : 'DEDUCTIBLE' as const,
+        date: tx.date || undefined,
+        amount: tx.amount,
+        standNumber: tx.standNumber,
+        rowIndex: index,
+      }));
+
+      const response = await fetch('/api/ai/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transactions }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || data.error || 'AI analysis failed');
+      }
+
+      setAiResult(data.data);
+      toast.success(`AI analysis complete! Categorized ${data.data.categorizations.length} transactions.`);
+    } catch (error: any) {
+      console.error('AI Analysis error:', error);
+      toast.error(error.message || 'AI analysis failed');
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   // Filter stands based on selected estate
@@ -896,6 +942,24 @@ export default function UploadsPage() {
                       </SelectContent>
                     </Select>
                     <Button
+                      onClick={handleAiAnalyze}
+                      disabled={aiLoading}
+                      variant="outline"
+                      className="border-purple-200 text-purple-700 hover:bg-purple-50"
+                    >
+                      {aiLoading ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Analyzing...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="mr-2 h-4 w-4" />
+                          AI Categorize
+                        </>
+                      )}
+                    </Button>
+                    <Button
                       onClick={handleImport}
                       disabled={importLoading}
                       className="bg-blue-600 hover:bg-blue-700"
@@ -923,6 +987,93 @@ export default function UploadsPage() {
                   </p>
                 </CardContent>
               </Card>
+
+              {/* AI Analysis Results */}
+              {aiResult && (
+                <Card className="border-purple-200">
+                  <CardHeader>
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Sparkles className="h-5 w-5 text-purple-600" />
+                      AI Analysis Results
+                      <Badge variant="secondary">{aiResult.categorizations?.length || 0} transactions</Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* Summary */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="bg-purple-50 p-4 rounded-lg text-center">
+                        <p className="text-2xl font-bold text-purple-600">{aiResult.summary?.totalTransactions || 0}</p>
+                        <p className="text-xs text-slate-500 uppercase">Total Transactions</p>
+                      </div>
+                      <div className="bg-emerald-50 p-4 rounded-lg text-center">
+                        <p className="text-2xl font-bold text-emerald-600">{aiResult.summary?.categoriesUsed?.length || 0}</p>
+                        <p className="text-xs text-slate-500 uppercase">Categories Used</p>
+                      </div>
+                      <div className="bg-red-50 p-4 rounded-lg text-center">
+                        <p className="text-2xl font-bold text-red-600">{aiResult.summary?.errorsFound || 0}</p>
+                        <p className="text-xs text-slate-500 uppercase">Errors Found</p>
+                      </div>
+                      <div className="bg-amber-50 p-4 rounded-lg text-center">
+                        <p className="text-2xl font-bold text-amber-600">{aiResult.summary?.warningsFound || 0}</p>
+                        <p className="text-xs text-slate-500 uppercase">Warnings</p>
+                      </div>
+                    </div>
+
+                    {/* Validation Errors */}
+                    {aiResult.validationErrors && aiResult.validationErrors.length > 0 && (
+                      <Alert className="bg-amber-50 border-amber-200">
+                        <AlertCircle className="h-4 w-4 text-amber-600" />
+                        <AlertTitle className="text-amber-800">AI Validation Issues</AlertTitle>
+                        <AlertDescription className="text-amber-700">
+                          <ul className="list-disc list-inside mt-2 text-sm max-h-40 overflow-y-auto">
+                            {aiResult.validationErrors.slice(0, 10).map((err: any, i: number) => (
+                              <li key={i}>
+                                <span className="font-medium">[{err.severity}]</span> {err.message}
+                              </li>
+                            ))}
+                          </ul>
+                        </AlertDescription>
+                      </Alert>
+                    )}
+
+                    {/* Categorizations */}
+                    <div className="border rounded-lg overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-purple-100">
+                          <tr>
+                            <th className="text-left p-3 font-medium">Description</th>
+                            <th className="text-left p-3 font-medium">AI Category</th>
+                            <th className="text-center p-3 font-medium">Confidence</th>
+                            <th className="text-left p-3 font-medium">Reasoning</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {aiResult.categorizations?.slice(0, 20).map((cat: any, idx: number) => (
+                            <tr key={idx} className="border-t">
+                              <td className="p-3 max-w-xs truncate" title={cat.originalDescription}>
+                                {cat.originalDescription}
+                              </td>
+                              <td className="p-3">
+                                <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">
+                                  {cat.category?.replace(/_/g, ' ')}
+                                </Badge>
+                              </td>
+                              <td className="p-3 text-center">
+                                <span className={`font-medium ${cat.confidence >= 0.8 ? 'text-emerald-600' : cat.confidence >= 0.5 ? 'text-amber-600' : 'text-red-600'}`}>
+                                  {(cat.confidence * 100).toFixed(0)}%
+                                </span>
+                              </td>
+                              <td className="p-3 text-slate-600 text-xs max-w-xs truncate" title={cat.reasoning}>
+                                {cat.reasoning}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
             </>
           )}
 

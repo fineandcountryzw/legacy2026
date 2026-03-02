@@ -5,7 +5,7 @@ import { getDb } from "@/lib/db"
 import { revalidatePath } from "next/cache"
 
 export async function getBrandProfile() {
-    const { userId } = await auth()
+    const session = await auth()
     if (!userId) throw new Error("Unauthorized")
 
     const sql = getDb()
@@ -28,7 +28,7 @@ export async function saveBrandProfile(formData: {
     website: string
     logoUrl?: string | null
 }) {
-    const { userId } = await auth()
+    const session = await auth()
     if (!userId) throw new Error("Unauthorized")
 
     const sql = getDb()

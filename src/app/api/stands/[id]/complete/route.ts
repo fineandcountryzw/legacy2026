@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
 import { completeStand } from '@/lib/services/stand-lifecycle-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 
 function sql() {
   return getDb();
@@ -35,7 +35,7 @@ export async function POST(
         ) as permissions
       FROM users u
       LEFT JOIN user_permissions up ON u.id = up.user_id
-      WHERE u.clerk_id = ${userId}
+      WHERE u.id = ${userId}
       GROUP BY u.id
     `;
     
@@ -44,10 +44,10 @@ export async function POST(
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission - need COMPLETE_STAND
-    if (!hasPermission(user.role, userPermissions, 'COMPLETE_STAND')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'COMPLETE_STAND')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     

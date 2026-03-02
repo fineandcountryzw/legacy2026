@@ -2,106 +2,75 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getDb } from "@/lib/db";
 
-// POST /api/fix-orphaned-transactions - Link orphaned transactions to stands
+function sql() {
+  return getDb();
+}
+
+/**
+ * POST /api/fix-orphaned-transactions
+ * Fix transactions that have been imported but not linked to stands
+ */
 export async function POST(request: NextRequest) {
   try {
     const { userId } = await auth();
-
+    
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-
-    const { uploadId } = await request.json();
-    const sql = getDb();
-
-    // 1. Get all orphaned transactions for this user/upload
-    const orphanedTxs = await sql`
-      SELECT id, description, upload_id FROM payment_transactions
-      WHERE user_id = ${userId} AND stand_id IS NULL
-      ${uploadId ? sql`AND upload_id = ${uploadId}` : sql``}
+    
+    const db = getDb();
+    
+    // Get user role
+    const userResult = await db`
+      SELECT role FROM users WHERE id = ${userId}
     `;
-
-    // 2. Extract stand numbers from descriptions (format: "[SheetName] description Stand number XXXX")
-    const fixed: string[] = [];
-    const failed: string[] = [];
-
-    for (const tx of orphanedTxs) {
-      // Extract stand number from description like "[Kumvura] Deposit Stand number 3524"
-      const match = tx.description?.match(/Stand number (\d+)/i);
-      if (!match) {
-        failed.push(`TX ${tx.id}: No stand number in description`);
-        continue;
-      }
-
-      const standNumber = match[1];
-
-      // Find development_stand with this stand number
-      const standResults = await sql`
-        SELECT ds.id 
-        FROM development_stands ds
-        JOIN stand_inventory si ON ds.stand_inventory_id = si.id
-        WHERE si.stand_number = ${standNumber}
-        LIMIT 1
-      `;
-
-      const stand = standResults[0];
-
-      if (!stand) {
-        failed.push(`TX ${tx.id}: Stand ${standNumber} not found`);
-        continue;
-      }
-
-      // Update transaction with stand_id
-      await sql`
-        UPDATE payment_transactions
-        SET 
-          stand_id = ${stand.id},
-          status = 'Matched'
-        WHERE id = ${tx.id}
-      `;
-
-      fixed.push(`TX ${tx.id} -> Stand ${standNumber} (${stand.id})`);
+    
+    if (userResult.length === 0) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
-
-    return NextResponse.json({
+    
+    // Only admins can run this
+    if (userResult[0].role !== 'ADMIN') {
+      return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+    }
+    
+    // Find orphaned transactions (where stand_id is null but development_id exists)
+    const orphaned = await db`
+      SELECT * FROM customer_payments
+      WHERE stand_id IS NULL AND development_id IS NOT NULL
+    `;
+    
+    // Try to link them to stands based on stand_number and development_id
+    let fixed = 0;
+    for (const tx of orphaned) {
+      // Find matching stand
+      const stand = await db`
+        SELECT ds.id FROM development_stands ds
+        WHERE ds.development_id = ${tx.development_id}
+          AND ds.stand_number = ${tx.stand_number}
+      `;
+      
+      if (stand.length > 0) {
+        // Update the transaction with the correct stand_id
+        await db`
+          UPDATE customer_payments
+          SET stand_id = ${stand[0].id}
+          WHERE id = ${tx.id}
+        `;
+        fixed++;
+      }
+    }
+    
+    return NextResponse.json({ 
       success: true,
-      totalOrphaned: orphanedTxs.length,
-      fixed: fixed.length,
-      failed: failed.length,
-      details: { fixed, failed }
+      orphanedCount: orphaned.length,
+      fixedCount: fixed
     });
-
   } catch (err) {
-    console.error("Fix error:", err);
-    return NextResponse.json({
-      error: err instanceof Error ? err.message : "Unknown error"
-    }, { status: 500 });
-  }
-}
-
-// GET /api/fix-orphaned-transactions - Check orphaned count
-export async function GET() {
-  try {
-    const { userId } = await auth();
-
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const sql = getDb();
-
-    const results = await sql`
-      SELECT COUNT(*) FROM payment_transactions
-      WHERE user_id = ${userId} AND stand_id IS NULL
-    `;
-
-    return NextResponse.json({
-      orphanedTransactions: parseInt(results[0].count || 0)
-    });
-
-  } catch (err) {
-    return NextResponse.json({
-      error: err instanceof Error ? err.message : "Unknown error"
-    }, { status: 500 });
+    console.error("Error in POST /api/fix-orphaned-transactions:", err);
+    return NextResponse.json(
+      { error: "Server error", details: err instanceof Error ? err.message : "Unknown error" },
+      { status: 500 }
+    );
   }
 }

@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth, clerkClient } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
 import { listUsers, createUser } from '@/lib/services/user-service';
-import { hasPermission, type UserRole } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 
 function sql() {
   return getDb();
@@ -190,4 +190,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

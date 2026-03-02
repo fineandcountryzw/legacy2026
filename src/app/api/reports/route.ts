@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
-import { hasPermission } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 import {
   getEstateSummary,
   getDeveloperPayoutSummary,
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
     
     // Get user from our database
     const userResult = await sql()`
-      SELECT id, role, permissions FROM users WHERE clerk_id = ${userId}
+      SELECT id, role, permissions FROM users WHERE id = ${userId}
     `;
     
     if (userResult.length === 0) {
@@ -36,10 +36,10 @@ export async function GET(request: NextRequest) {
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission
-    if (!hasPermission(user.role, userPermissions, 'VIEW_REPORTS')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'VIEW_REPORTS')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
@@ -102,4 +102,3 @@ export async function GET(request: NextRequest) {
     );
   }
 }
-

@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getDb } from '@/lib/db';
 import { requestPayout, getPayouts, getPendingPayouts } from '@/lib/services/payout-service';
-import { hasPermission } from '@/lib/auth/rbac';
+import { hasPermission, type UserRole, type Permission } from '@/lib/auth/rbac';
 import { PayoutFilters } from '@/lib/auth/types';
 
 function sql() {
@@ -18,15 +18,6 @@ function sql() {
 /**
  * GET /api/payouts
  * List payouts with optional filters
- * Query params:
- *   - status: PENDING | APPROVED | REJECTED | PAID
- *   - developer: string
- *   - developmentId: string
- *   - dateFrom: string (ISO date)
- *   - dateTo: string (ISO date)
- *   - pendingOnly: boolean
- *   - limit: number (default: 50)
- *   - offset: number (default: 0)
  */
 export async function GET(request: NextRequest) {
   try {
@@ -36,7 +27,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
-    // Get user from our database
+    // Get user from our database (by clerk_id)
     const userResult = await sql()`
       SELECT id, role, permissions FROM users WHERE clerk_id = ${userId}
     `;
@@ -46,10 +37,10 @@ export async function GET(request: NextRequest) {
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission
-    if (!hasPermission(user.role, userPermissions, 'VIEW_ALL_PAYOUTS')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'VIEW_ALL_PAYOUTS')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
@@ -98,14 +89,6 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/payouts
  * Request a new payout
- * Body: {
- *   standId: string
- *   developerName: string
- *   amount: number
- *   payoutType: 'INSTALLMENT' | 'COMPLETION' | 'COMMISSION'
- *   description?: string
- *   relatedDeductionIds?: string[]
- * }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -115,7 +98,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
-    // Get user from our database
+    // Get user from our database (by clerk_id)
     const userResult = await sql()`
       SELECT id, role, permissions FROM users WHERE clerk_id = ${userId}
     `;
@@ -125,10 +108,10 @@ export async function POST(request: NextRequest) {
     }
     
     const user = userResult[0];
-    const userPermissions = user.permissions || [];
+    const userPermissions: Permission[] = (user.permissions || []) as Permission[];
     
     // Check permission
-    if (!hasPermission(user.role, userPermissions, 'REQUEST_PAYOUT')) {
+    if (!hasPermission(user.role as UserRole, userPermissions, 'REQUEST_PAYOUT')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
     
@@ -173,4 +156,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
